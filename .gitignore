@@ -1,0 +1,53 @@
+node_modules/
+**/node_modules/
+build/
+**/build/
+dist/
+**/dist/
+coverage/
+**/coverage/
+.DS_Store
+*.log
+.logs/
+**/.logs/
+
+# Python virtual environments
+.venv/
+**/.venv/
+venv/
+**/venv/
+env/
+**/env/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environment / secrets — never commit real values
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+deepseek-web-to-api-main/.env
+deepseek-web-to-api-main/.env.*
+!.deepseek-web-to-api-main/.env.example
+
+# Runtime state
+cookies/
+*.db
+*.db-journal
+*.bak
+*.orig
+*.pid
+
+# Docker / data
+pgdata/
+**/pgdata/
+data/
+**/data/

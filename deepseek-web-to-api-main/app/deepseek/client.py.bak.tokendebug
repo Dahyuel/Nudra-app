@@ -1,0 +1,153 @@
+import json
+from typing import AsyncIterator
+
+from curl_cffi.requests import AsyncSession
+from loguru import logger
+
+from app.config import settings
+
+from .auth import ensure_device_id, load_cookies
+from .errors import AuthError, UpstreamError
+from .pow import build_pow_header, parse_challenge, solve
+
+
+class DeepSeekClient:
+    def __init__(self):
+        self.base = settings.base_url
+        self.device_id = ensure_device_id()
+        self._session = None
+        # Populated by completion() as the stream runs
+        self.last_message_id: int | None = None
+        self.last_token_usage: int = 0
+
+    async def __aenter__(self):
+        self._session = AsyncSession(impersonate="chrome", timeout=settings.request_timeout)
+        return self
+
+    async def __aexit__(self, *exc):
+        if self._session:
+            await self._session.close()
+
+    def _headers(self, extra=None):
+        h = {
+            "accept": "*/*",
+            "accept-language": "en-US,en;q=0.9",
+            "authorization": settings.deepseek_authorization,
+            "cookie": load_cookies(),
+            "origin": self.base,
+            "referer": self.base + "/",
+            "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+            "x-client-bundle-id": settings.deepseek_client_bundle_id,
+            "x-client-locale": settings.deepseek_client_locale,
+            "x-client-platform": settings.deepseek_client_platform,
+            "x-client-timezone-offset": str(settings.deepseek_client_timezone_offset),
+            "x-client-version": settings.deepseek_client_version,
+            "x-device-id": self.device_id,
+            "x-device-model": "",
+        }
+        if extra:
+            h.update(extra)
+        return h
+
+    async def _get(self, path, extra_headers=None):
+        r = await self._session.get(self.base + path, headers=self._headers(extra_headers))
+        return self._handle(r)
+
+    async def _post(self, path, body, extra_headers=None):
+        r = await self._session.post(
+            self.base + path,
+            headers=self._headers({"content-type": "application/json", **(extra_headers or {})}),
+            data=json.dumps(body),
+        )
+        return self._handle(r)
+
+    def _handle(self, r):
+        if r.status_code in (401, 403):
+            raise AuthError(f"Auth failed ({r.status_code}): {r.text[:300]}")
+        if r.status_code != 200:
+            raise UpstreamError(f"HTTP {r.status_code}: {r.text[:300]}")
+        try:
+            data = r.json()
+        except Exception:
+            raise UpstreamError(f"Non-JSON response: {r.text[:300]}")
+        if data.get("code") != 0:
+            raise UpstreamError(f"API error: {data.get('msg')}")
+        return data
+
+    async def current_user(self):
+        return await self._get("/api/v0/users/current")
+
+    async def create_session(self) -> str:
+        data = await self._post("/api/v0/chat_session/create", {})
+        return data["data"]["biz_data"]["chat_session"]["id"]
+
+    async def _get_pow(self, target_path):
+        data = await self._post("/api/v0/chat/create_pow_challenge", {"target_path": target_path})
+        ch = parse_challenge(data)
+        answer = solve(ch)
+        return build_pow_header(ch, answer)
+
+    async def completion(self, chat_session_id, prompt, parent_message_id=None,
+                         model_type="default", thinking_enabled=False,
+                         search_enabled=False, ref_file_ids=None):
+        target = "/api/v0/chat/completion"
+        pow_header = await self._get_pow(target)
+
+        body = {
+            "chat_session_id": chat_session_id,
+            "parent_message_id": parent_message_id,
+            "model_type": model_type,
+            "prompt": prompt,
+            "ref_file_ids": ref_file_ids or [],
+            "thinking_enabled": thinking_enabled,
+            "search_enabled": search_enabled,
+            "action": None,
+            "preempt": False,
+        }
+
+        headers = self._headers({"content-type": "application/json", "x-ds-pow-response": pow_header})
+
+        async with self._session.stream("POST", self.base + target, headers=headers, data=json.dumps(body)) as r:
+            if r.status_code in (401, 403):
+                raise AuthError(f"Auth failed on completion ({r.status_code})")
+            if r.status_code != 200:
+                raise UpstreamError(f"HTTP {r.status_code}")
+
+            async for line in r.aiter_lines():
+                line = line.decode() if isinstance(line, bytes) else line
+                if not line:
+                    continue
+                if line.startswith("event: "):
+                    evt = line[7:].strip()
+                    if evt in ("close", "continue", "auto_continue"):
+                        logger.debug(f"CONTINUE-SIGNAL EVENT: {evt}")
+                    yield {"event": evt}
+                elif line.startswith("data: "):
+                    raw = line[6:].strip()
+                    if raw:
+                        if "click_behavior" in raw or "auto_resume" in raw:
+                            logger.debug(f"CONTINUE-SIGNAL DATA: {raw}")
+                        try:
+                            parsed = json.loads(raw)
+                        except json.JSONDecodeError:
+                            logger.warning(f"Bad SSE chunk: {raw[:200]}")
+                            continue
+                        # Capture the message_id from the initial response
+                        # {"v": {"response": {"message_id": 2, ...}}}
+                        v = parsed.get("v")
+                        if isinstance(v, dict) and "response" in v:
+                            mid = v["response"].get("message_id")
+                            if isinstance(mid, int):
+                                self.last_message_id = mid
+
+                        # Capture accumulated_token_usage from BATCH events
+                        # {"p": "response", "o": "BATCH",
+                        #  "v": [{"p": "accumulated_token_usage", "v": 42}, ...]}
+                        if parsed.get("o") == "BATCH" and isinstance(v, list):
+                            for entry in v:
+                                if isinstance(entry, dict) and entry.get("p") == "accumulated_token_usage":
+                                    tokens = entry.get("v")
+                                    if isinstance(tokens, int):
+                                        self.last_token_usage = tokens
+
+                        yield {"data": parsed}

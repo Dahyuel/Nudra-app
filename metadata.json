@@ -1,0 +1,6 @@
+{
+  "name": "Nudra (ندرة) - EdTech Platform",
+  "description": "Modern edtech web application featuring personalized student dashboard, course catalog, AI tutor, and learning analytics inspired by Donezo design.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
