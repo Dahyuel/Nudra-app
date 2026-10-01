@@ -39,8 +39,8 @@ export const LandingPage: React.FC = () => {
             <Link to="/ai-tutor" className="hover:text-[#2D6A4F] transition-colors">
               AI Tutor
             </Link>
-            <Link to="/instructor/dashboard" className="text-emerald-700 hover:text-[#2D6A4F] font-bold transition-colors">
-              Instructor Studio
+            <Link to="/teach" className="text-emerald-700 hover:text-[#2D6A4F] font-bold transition-colors">
+              Teach on Nudra
             </Link>
           </nav>
 

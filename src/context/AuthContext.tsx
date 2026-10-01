@@ -9,19 +9,36 @@ export type User = {
   role: 'student' | 'instructor';
   avatarUrl: string | null;
   grade: string | null;
+  /** Instructor approval state; null for students and legacy/seeded instructors. */
+  instructorStatus: 'pending' | 'approved' | 'rejected' | null;
+};
+
+export type InstructorApplicationInput = {
+  name: string;
+  email: string;
+  password: string;
+  subjects: string;
+  experienceYears: number;
+  bio: string;
+  portfolioUrl?: string;
+};
+
+export const isApprovedInstructor = (user: User) =>
+  user.role === 'instructor' && (user.instructorStatus === null || user.instructorStatus === 'approved');
+
+/** Where a signed-in user belongs by default. */
+export const homePathFor = (user: User) => {
+  if (user.role !== 'instructor') return '/dashboard';
+  return isApprovedInstructor(user) ? '/instructor/dashboard' : '/instructor/pending';
 };
 
 interface AuthContextValue {
   user: User | null;
   isLoading: boolean;
-  login: (email: string, password: string, role: 'student' | 'instructor') => Promise<void>;
-  register: (
-    name: string,
-    email: string,
-    password: string,
-    role: 'student' | 'instructor',
-    grade?: string
-  ) => Promise<void>;
+  login: (email: string, password: string) => Promise<void>;
+  register: (name: string, email: string, password: string, grade?: string) => Promise<void>;
+  applyToTeach: (input: InstructorApplicationInput) => Promise<void>;
+  refreshUser: () => Promise<User | null>;
   logout: () => Promise<void>;
 }
 
@@ -64,12 +81,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
+  // The server knows each account's role, so login needs no role picker.
   const login = useCallback(
-    async (email: string, password: string, role: 'student' | 'instructor') => {
+    async (email: string, password: string) => {
       try {
-        const { data } = await api.post('/api/auth/login', { email, password, role });
+        const { data } = await api.post('/api/auth/login', { email, password });
         setUser(data.user);
-        navigate(data.user.role === 'instructor' ? '/instructor/dashboard' : '/dashboard');
+        navigate(homePathFor(data.user));
       } catch (err: any) {
         throw new Error(err?.response?.data?.message || 'Login failed');
       }
@@ -77,30 +95,48 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     [navigate]
   );
 
+  // Public sign-up creates students only; teachers use applyToTeach.
   const register = useCallback(
-    async (
-      name: string,
-      email: string,
-      password: string,
-      role: 'student' | 'instructor',
-      grade?: string
-    ) => {
+    async (name: string, email: string, password: string, grade?: string) => {
       try {
-        const { data } = await api.post('/api/auth/register', {
-          name,
-          email,
-          password,
-          role,
-          grade,
-        });
+        const { data } = await api.post('/api/auth/register', { name, email, password, grade });
         setUser(data.user);
-        navigate(data.user.role === 'instructor' ? '/instructor/dashboard' : '/dashboard');
+        navigate(homePathFor(data.user));
       } catch (err: any) {
         throw new Error(err?.response?.data?.message || 'Registration failed');
       }
     },
     [navigate]
   );
+
+  const applyToTeach = useCallback(
+    async (input: InstructorApplicationInput) => {
+      try {
+        const { data } = await api.post('/api/auth/register-instructor', input);
+        setUser(data.user);
+        navigate(homePathFor(data.user));
+      } catch (err: any) {
+        const fieldErrors = err?.response?.data?.errors as Record<string, string[]> | undefined;
+        const firstFieldError = fieldErrors && Object.entries(fieldErrors).find(([, msgs]) => msgs?.length);
+        throw new Error(
+          firstFieldError
+            ? `${firstFieldError[0]}: ${firstFieldError[1][0]}`
+            : err?.response?.data?.message || 'Application failed'
+        );
+      }
+    },
+    [navigate]
+  );
+
+  const refreshUser = useCallback(async () => {
+    try {
+      const { data } = await api.get('/api/auth/me');
+      setUser(data.user);
+      return data.user as User;
+    } catch {
+      return null;
+    }
+  }, []);
 
   const logout = useCallback(async () => {
     try {
@@ -112,7 +148,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [navigate]);
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, isLoading, login, register, applyToTeach, refreshUser, logout }}>
       {children}
     </AuthContext.Provider>
   );

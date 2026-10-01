@@ -27,6 +27,7 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
         role: users.role,
         avatarUrl: users.avatarUrl,
         grade: users.grade,
+        instructorStatus: users.instructorStatus,
         createdAt: users.createdAt,
         updatedAt: users.updatedAt,
       })
@@ -49,6 +50,10 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
   }
 };
 
+// NULL status covers seeded/legacy instructors created before the approval flow.
+export const isApprovedInstructor = (user: { role: string; instructorStatus: string | null }) =>
+  user.role === 'instructor' && (user.instructorStatus === null || user.instructorStatus === 'approved');
+
 export const requireRole = (role: 'student' | 'instructor') => {
   return (req: Request, res: Response, next: NextFunction) => {
     if (!req.user) {
@@ -59,6 +64,12 @@ export const requireRole = (role: 'student' | 'instructor') => {
     }
     if (req.user.role !== role) {
       return res.status(403).json({ message: 'Forbidden' });
+    }
+    if (role === 'instructor' && !isApprovedInstructor(req.user)) {
+      return res.status(403).json({
+        message: 'Your instructor application has not been approved yet',
+        code: 'INSTRUCTOR_NOT_APPROVED',
+      });
     }
     next();
   };

@@ -1,11 +1,10 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Mail, Lock, GraduationCap, Briefcase, ArrowRight, Check } from 'lucide-react';
+import { Mail, Lock, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export const LoginPage: React.FC = () => {
   const { login } = useAuth();
-  const [role, setRole] = useState<'student' | 'instructor'>('student');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
@@ -19,17 +18,13 @@ export const LoginPage: React.FC = () => {
     setTimeout(() => setForgotMessage(false), 3000);
   };
 
-  const handleRoleChange = (newRole: 'student' | 'instructor') => {
-    setRole(newRole);
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSubmitting(true);
     setError(null);
 
     try {
-      await login(email, password, role);
+      await login(email, password);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -47,45 +42,12 @@ export const LoginPage: React.FC = () => {
 
       {/* Main Centered Login Card */}
       <div className="w-full max-w-md bg-white rounded-2xl p-6 sm:p-8 border border-gray-100 shadow-md space-y-6">
-        {/* Role Toggle at Top */}
-        <div className="space-y-2">
-          <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider text-center">
-            Select Your Portal
-          </label>
-          <div className="grid grid-cols-2 gap-1.5 p-1 bg-[#F8FAF9] rounded-xl border border-gray-100">
-            <button
-              type="button"
-              onClick={() => handleRoleChange('student')}
-              className={`py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
-                role === 'student'
-                  ? 'bg-[#2D6A4F] text-white shadow-2xs'
-                  : 'text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              <GraduationCap className="w-4 h-4" />
-              <span>Student</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleRoleChange('instructor')}
-              className={`py-2 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
-                role === 'instructor'
-                  ? 'bg-[#2D6A4F] text-white shadow-2xs'
-                  : 'text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              <Briefcase className="w-4 h-4" />
-              <span>Instructor</span>
-            </button>
-          </div>
-        </div>
-
         <div className="text-center space-y-1">
           <h1 className="text-xl sm:text-2xl font-black text-[#1B1B1B]">
             Welcome Back to Nudra
           </h1>
           <p className="text-xs text-[#6B7280]">
-            Sign in as {role === 'student' ? 'a Student' : 'an Instructor'} to continue
+            Students and instructors sign in here. We'll take you to the right place.
           </p>
         </div>
 
@@ -164,7 +126,7 @@ export const LoginPage: React.FC = () => {
               <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
             ) : (
               <>
-                <span>Sign In to {role === 'student' ? 'Student Dashboard' : 'Instructor Portal'}</span>
+                <span>Sign In</span>
                 <ArrowRight className="w-4 h-4" />
               </>
             )}
@@ -175,8 +137,14 @@ export const LoginPage: React.FC = () => {
         <p className="text-center text-xs text-gray-500 pt-2 border-t border-gray-100">
           Don't have an account yet?{' '}
           <Link to="/register" className="font-bold text-[#2D6A4F] hover:underline">
-            Create an Account
+            Create a Student Account
           </Link>
+          <span className="block mt-2">
+            Are you a teacher?{' '}
+            <Link to="/teach" className="font-bold text-[#2D6A4F] hover:underline">
+              Apply to teach on Nudra
+            </Link>
+          </span>
         </p>
       </div>
     </div>

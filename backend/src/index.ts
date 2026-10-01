@@ -170,7 +170,10 @@ const aiLimiter = rateLimit({
 app.use('/api', speedLimiter);
 // Only credential endpoints get the strict limiter; /api/auth/me runs on every
 // page load and must not lock users out.
-app.use(['/api/auth/login', '/api/auth/register', '/api/auth/password'], authLimiter);
+app.use(
+  ['/api/auth/login', '/api/auth/register', '/api/auth/register-instructor', '/api/auth/password'],
+  authLimiter
+);
 app.use('/api/ai', aiLimiter);
 app.use('/api', limiter);
 

@@ -3,7 +3,7 @@ import { Server } from 'socket.io';
 import { eq, and, isNull, ilike, or, sql, count, inArray } from 'drizzle-orm';
 import { db } from '../db';
 import { communityPosts, communityReplies, postVotes, courses, users, sessions, enrollments } from '../db/schema';
-import { requireAuth, requireRole } from '../middleware/requireAuth';
+import { requireAuth, requireRole, isApprovedInstructor } from '../middleware/requireAuth';
 import { generateAnonToken } from '../lib/anonToken';
 import { checkAndAwardBadges } from '../lib/badges';
 import { sendCommunityReplyEmail } from '../lib/mailer';
@@ -94,6 +94,7 @@ export function createCommunityRouter(io: Server) {
           authorName: users.name,
           authorAvatarUrl: users.avatarUrl,
           authorRole: users.role,
+          authorInstructorStatus: users.instructorStatus,
         })
         .from(communityPosts)
         .innerJoin(users, eq(communityPosts.authorId, users.id))
@@ -156,7 +157,7 @@ export function createCommunityRouter(io: Server) {
               avatarUrl: r.authorAvatarUrl,
               isAnonymous: false,
               anonToken: null,
-              isInstructor: r.authorRole === 'instructor',
+              isInstructor: isApprovedInstructor({ role: r.authorRole, instructorStatus: r.authorInstructorStatus }),
             };
 
         return {
@@ -193,6 +194,7 @@ export function createCommunityRouter(io: Server) {
           authorName: users.name,
           authorAvatarUrl: users.avatarUrl,
           authorRole: users.role,
+          authorInstructorStatus: users.instructorStatus,
         })
         .from(communityReplies)
         .innerJoin(users, eq(communityReplies.authorId, users.id))
@@ -245,7 +247,7 @@ export function createCommunityRouter(io: Server) {
               avatarUrl: r.authorAvatarUrl,
               isAnonymous: false,
               anonToken: null,
-              isInstructor: r.authorRole === 'instructor',
+              isInstructor: isApprovedInstructor({ role: r.authorRole, instructorStatus: r.authorInstructorStatus }),
             };
 
         return {
@@ -323,7 +325,7 @@ export function createCommunityRouter(io: Server) {
             avatarUrl: req.user!.avatarUrl,
             isAnonymous: false,
             anonToken: null,
-            isInstructor: req.user!.role === 'instructor',
+            isInstructor: isApprovedInstructor(req.user!),
           };
 
       const responsePost = {
@@ -478,7 +480,7 @@ export function createCommunityRouter(io: Server) {
             avatarUrl: req.user!.avatarUrl,
             isAnonymous: false,
             anonToken: null,
-            isInstructor: req.user!.role === 'instructor',
+            isInstructor: isApprovedInstructor(req.user!),
           };
 
       const responseReply = {

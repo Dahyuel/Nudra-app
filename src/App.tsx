@@ -21,6 +21,8 @@ import { SanaweyaExamsPage } from './pages/SanaweyaExamsPage';
 import { SanaweyaExamViewPage } from './pages/SanaweyaExamViewPage';
 import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
+import { InstructorApplyPage } from './pages/InstructorApplyPage';
+import { InstructorPendingPage } from './pages/InstructorPendingPage';
 import { InstructorDashboardPage } from './pages/instructor/InstructorDashboardPage';
 import { InstructorCoursesPage } from './pages/instructor/InstructorCoursesPage';
 import { InstructorStudentsPage } from './pages/instructor/InstructorStudentsPage';
@@ -28,7 +30,7 @@ import { InstructorEarningsPage } from './pages/instructor/InstructorEarningsPag
 import { InstructorAnalyticsPage } from './pages/instructor/InstructorAnalyticsPage';
 import { UploadCoursePage } from './pages/instructor/UploadCoursePage';
 import { ProtectedRoute } from './components/ProtectedRoute';
-import { useAuth } from './context/AuthContext';
+import { useAuth, homePathFor } from './context/AuthContext';
 
 const FallbackRedirect: React.FC = () => {
   const { user, isLoading } = useAuth();
@@ -42,7 +44,7 @@ const FallbackRedirect: React.FC = () => {
   }
 
   if (!user) return <Navigate to="/login" replace />;
-  return <Navigate to={user.role === 'instructor' ? '/instructor/dashboard' : '/dashboard'} replace />;
+  return <Navigate to={homePathFor(user)} replace />;
 };
 
 const PublicOnlyRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -57,7 +59,7 @@ const PublicOnlyRoute: React.FC<{ children: React.ReactNode }> = ({ children }) 
   }
 
   if (user) {
-    return <Navigate to={user.role === 'instructor' ? '/instructor/dashboard' : '/dashboard'} replace />;
+    return <Navigate to={homePathFor(user)} replace />;
   }
 
   return <>{children}</>;
@@ -91,6 +93,18 @@ export default function App() {
           </PublicOnlyRoute>
         }
       />
+      {/* Teachers apply here; accounts start pending until approved */}
+      <Route
+        path="/teach"
+        element={
+          <PublicOnlyRoute>
+            <InstructorApplyPage />
+          </PublicOnlyRoute>
+        }
+      />
+      <Route element={<ProtectedRoute />}>
+        <Route path="/instructor/pending" element={<InstructorPendingPage />} />
+      </Route>
 
       {/* Public pages that render inside the dashboard shell when logged in, standalone otherwise */}
       <Route element={<DashboardShell />}>

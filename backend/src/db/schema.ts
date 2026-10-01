@@ -32,6 +32,26 @@ export const users = pgTable('users', {
   role: roleEnum('role').notNull().default('student'),
   avatarUrl: text('avatar_url'),
   grade: varchar('grade', { length: 255 }),
+  // Instructor approval: 'pending' | 'approved' | 'rejected'. NULL = not an
+  // applicant (students) or a legacy/seeded instructor, treated as approved.
+  instructorStatus: varchar('instructor_status', { length: 20 }),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+});
+
+export const instructorApplications = pgTable('instructor_applications', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id')
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  subjects: text('subjects').notNull(),
+  experienceYears: integer('experience_years').notNull(),
+  bio: text('bio').notNull(),
+  portfolioUrl: text('portfolio_url'),
+  status: varchar('status', { length: 20 }).notNull().default('pending'),
+  reviewNote: text('review_note'),
+  reviewedAt: timestamp('reviewed_at'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });

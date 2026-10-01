@@ -1,6 +1,6 @@
 import React from 'react';
 import { Navigate, Outlet } from 'react-router-dom';
-import { useAuth } from '../context/AuthContext';
+import { useAuth, homePathFor, isApprovedInstructor } from '../context/AuthContext';
 
 interface ProtectedRouteProps {
   requiredRole?: 'student' | 'instructor';
@@ -22,7 +22,12 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ requiredRole }) 
   }
 
   if (requiredRole && user.role !== requiredRole) {
-    return <Navigate to={user.role === 'instructor' ? '/instructor/dashboard' : '/dashboard'} replace />;
+    return <Navigate to={homePathFor(user)} replace />;
+  }
+
+  // Applicants can't use the Instructor Studio until approved.
+  if (requiredRole === 'instructor' && !isApprovedInstructor(user)) {
+    return <Navigate to="/instructor/pending" replace />;
   }
 
   return <Outlet />;

@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import { eq, and, gt } from 'drizzle-orm';
 import { db } from '../db';
-import { users, sessions } from '../db/schema';
+import { users, sessions, instructorApplications } from '../db/schema';
 import { requireAuth } from '../middleware/requireAuth';
 import { sendWelcomeEmail } from '../lib/mailer';
 import { createNotification } from '../lib/notifications';
@@ -43,6 +43,36 @@ const publicUser = (user: typeof users.$inferSelect) => ({
   role: user.role,
   avatarUrl: user.avatarUrl,
   grade: user.grade,
+  instructorStatus: user.instructorStatus,
+});
+
+async function startSession(res: Response, userId: string) {
+  const sessionRows = await db
+    .insert(sessions)
+    .values({
+      userId,
+      expiresAt: new Date(Date.now() + THIRTY_DAYS_MS),
+    })
+    .returning();
+
+  res.cookie('session_id', sessionRows[0].id, COOKIE_OPTIONS);
+}
+
+const instructorApplicationSchema = z.object({
+  name: z.string().trim().min(2).max(255),
+  email: z.string().trim().max(255),
+  password: z.string(),
+  subjects: z.string().trim().min(2).max(500),
+  experienceYears: z.number().int().min(0).max(60),
+  bio: z.string().trim().min(30).max(3000),
+  portfolioUrl: z
+    .string()
+    .trim()
+    .max(2048)
+    .url()
+    .refine((u) => /^https?:\/\//i.test(u), 'Must be an http(s) link')
+    .optional()
+    .or(z.literal('')),
 });
 
 const avatarUpload = multer({
@@ -67,8 +97,17 @@ router.post('/register', async (req: Request, res: Response) => {
   try {
     const { name, email, password, role, grade } = req.body ?? {};
 
-    if (!name || !email || !password || !role) {
+    if (!name || !email || !password) {
       return res.status(400).json({ message: 'All required fields must be provided' });
+    }
+
+    // Public sign-up is students only. Instructors apply via /register-instructor
+    // and must be approved before they get instructor access.
+    if (role !== undefined && role !== 'student') {
+      return res.status(400).json({
+        message: 'Instructor accounts require an application. Please apply to teach instead.',
+        code: 'INSTRUCTOR_APPLICATION_REQUIRED',
+      });
     }
 
     const normalizedEmail = sanitizeEmail(email);
@@ -84,10 +123,6 @@ router.post('/register', async (req: Request, res: Response) => {
       });
     }
 
-    if (role !== 'student' && role !== 'instructor') {
-      return res.status(400).json({ message: 'Invalid role' });
-    }
-
     const existing = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
     if (existing.length > 0) {
       return res.status(409).json({ message: 'Email already registered' });
@@ -101,22 +136,14 @@ router.post('/register', async (req: Request, res: Response) => {
         name: name.trim().slice(0, 255),
         email: normalizedEmail,
         passwordHash,
-        role,
-        grade: role === 'student' ? (grade ? String(grade).trim().slice(0, 255) : null) : null,
+        role: 'student',
+        grade: grade ? String(grade).trim().slice(0, 255) : null,
       })
       .returning();
 
     const user = inserted[0];
 
-    const sessionRows = await db
-      .insert(sessions)
-      .values({
-        userId: user.id,
-        expiresAt: new Date(Date.now() + THIRTY_DAYS_MS),
-      })
-      .returning();
-
-    res.cookie('session_id', sessionRows[0].id, COOKIE_OPTIONS);
+    await startSession(res, user.id);
 
     sendWelcomeEmail({ name: user.name, email: user.email, role: user.role }).catch(console.warn);
     createNotification(
@@ -133,6 +160,102 @@ router.post('/register', async (req: Request, res: Response) => {
     });
   } catch (err) {
     console.error('register error', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Teacher applies to teach: creates an instructor account in 'pending' state.
+// It has no instructor API access until approved (see scripts/instructors.ts).
+router.post('/register-instructor', async (req: Request, res: Response) => {
+  try {
+    const parsed = instructorApplicationSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: 'Please check the application fields',
+        errors: parsed.error.flatten().fieldErrors,
+      });
+    }
+    const { name, password, subjects, experienceYears, bio, portfolioUrl } = parsed.data;
+    const normalizedEmail = sanitizeEmail(parsed.data.email);
+
+    if (!normalizedEmail.includes('@')) {
+      return res.status(400).json({ message: 'Invalid email address' });
+    }
+
+    if (!isValidPassword(password)) {
+      return res.status(400).json({
+        message:
+          'Password must be at least 8 characters and contain uppercase, lowercase, and numeric characters',
+      });
+    }
+
+    const existing = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
+    if (existing.length > 0) {
+      return res.status(409).json({ message: 'Email already registered' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+
+    const user = await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(users)
+        .values({
+          name,
+          email: normalizedEmail,
+          passwordHash,
+          role: 'instructor',
+          instructorStatus: 'pending',
+        })
+        .returning();
+
+      await tx.insert(instructorApplications).values({
+        userId: created.id,
+        subjects,
+        experienceYears,
+        bio,
+        portfolioUrl: portfolioUrl || null,
+      });
+
+      return created;
+    });
+
+    await startSession(res, user.id);
+
+    createNotification(
+      user.id,
+      'instructor_application',
+      'Application received',
+      'Thanks for applying to teach on Nudra. We will review your application and notify you.',
+      '/instructor/pending'
+    ).catch(console.warn);
+
+    return res.status(201).json({
+      message: 'Application submitted',
+      user: publicUser(user),
+    });
+  } catch (err) {
+    console.error('register-instructor error', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+router.get('/instructor-application', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const rows = await db
+      .select({
+        status: instructorApplications.status,
+        subjects: instructorApplications.subjects,
+        reviewNote: instructorApplications.reviewNote,
+        createdAt: instructorApplications.createdAt,
+        reviewedAt: instructorApplications.reviewedAt,
+      })
+      .from(instructorApplications)
+      .where(eq(instructorApplications.userId, req.user!.id))
+      .limit(1);
+
+    return res.json({ application: rows[0] ?? null });
+  } catch (err) {
+    console.error('get instructor application error', err);
     return res.status(500).json({ message: 'Internal server error' });
   }
 });
@@ -218,6 +341,7 @@ router.get('/me', async (req: Request, res: Response) => {
         role: users.role,
         avatarUrl: users.avatarUrl,
         grade: users.grade,
+        instructorStatus: users.instructorStatus,
       })
       .from(sessions)
       .innerJoin(users, eq(sessions.userId, users.id))
