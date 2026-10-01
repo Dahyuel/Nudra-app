@@ -24,5 +24,5 @@ export const useCertificates = () => {
     enabled: !!user && user.role === 'student',
   });
 
-  return { certificates: query.data ?? [], isLoading: query.isLoading };
+  return { certificates: query.data ?? [], isLoading: query.isLoading, error: query.error };
 };

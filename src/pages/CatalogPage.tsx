@@ -389,11 +389,11 @@ export const CatalogPage: React.FC = () => {
                         ) : (
                           <div className="flex items-baseline gap-1.5">
                             <span className="text-lg font-black text-[#1B1B1B]">
-                              ${course.price}
+                              {course.price} EGP
                             </span>
                             {course.originalPrice && (
                               <span className="text-xs text-gray-400 line-through">
-                                ${course.originalPrice}
+                                {course.originalPrice} EGP
                               </span>
                             )}
                           </div>

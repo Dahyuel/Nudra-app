@@ -16,7 +16,9 @@ import {
   Trash2,
   Clock,
 } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../context/AuthContext';
+import api from '../lib/api';
 import { useMyEnrollments } from '../hooks/useMyEnrollments';
 import { useAiChat } from '../hooks/useAiChat';
 import { useConversations, type Conversation } from '../hooks/useConversations';
@@ -110,6 +112,28 @@ const AiTutorPageInner: React.FC = () => {
   const handleNewChat = async () => {
     await resetConversation();
     setInputText('');
+  };
+
+  // Two-step delete: first click arms the button, second click deletes.
+  const queryClient = useQueryClient();
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const handleDeleteConversation = async (id: string) => {
+    if (pendingDeleteId !== id) {
+      setPendingDeleteId(id);
+      return;
+    }
+    setDeletingId(id);
+    try {
+      await api.delete(`/api/ai/conversations/${id}`);
+      if (id === conversationId) await resetConversation();
+      await queryClient.invalidateQueries({ queryKey: ['ai-conversations'] });
+    } catch {
+      setError('Could not delete that conversation. Please try again.');
+    } finally {
+      setDeletingId(null);
+      setPendingDeleteId(null);
+    }
   };
 
   const getConversationTitle = (conv: Conversation): string => {
@@ -210,12 +234,13 @@ const AiTutorPageInner: React.FC = () => {
 
             {conversations.map((conv) => {
               const isActive = conv.id === conversationId;
+              const armed = pendingDeleteId === conv.id;
               return (
+                <div key={conv.id} className="relative group" onMouseLeave={() => armed && setPendingDeleteId(null)}>
                 <button
-                  key={conv.id}
                   type="button"
                   onClick={() => handleOpenConversation(conv)}
-                  className={`w-full text-left p-3 rounded-xl border transition-all group ${
+                  className={`w-full text-left p-3 pr-9 rounded-xl border transition-all group ${
                     isActive
                       ? 'bg-emerald-50/70 border-[#B7E4C7]'
                       : 'bg-[#F8FAF9] hover:bg-emerald-50/50 border-gray-100'
@@ -246,6 +271,22 @@ const AiTutorPageInner: React.FC = () => {
                     )}
                   </div>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => handleDeleteConversation(conv.id)}
+                  disabled={deletingId === conv.id}
+                  aria-label={armed ? 'Confirm delete conversation' : 'Delete conversation'}
+                  title={armed ? 'Click again to delete' : 'Delete conversation'}
+                  className={`absolute top-2 right-2 inline-flex items-center gap-1 rounded-lg px-1.5 py-1 text-[10px] font-bold transition-all disabled:opacity-50 ${
+                    armed
+                      ? 'bg-red-50 text-red-600 border border-red-200'
+                      : 'text-gray-400 opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-red-600'
+                  }`}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  {armed && <span>{deletingId === conv.id ? '...' : 'Delete?'}</span>}
+                </button>
+                </div>
               );
             })}
           </div>

@@ -36,8 +36,51 @@ export const users = pgTable('users', {
   // Instructor approval: 'pending' | 'approved' | 'rejected'. NULL = not an
   // applicant (students) or a legacy/seeded instructor, treated as approved.
   instructorStatus: varchar('instructor_status', { length: 20 }),
+  // Settings page preferences.
+  preferredLanguage: varchar('preferred_language', { length: 5 }).notNull().default('en'),
+  notifyCommunity: boolean('notify_community').notNull().default(true),
+  notifySessions: boolean('notify_sessions').notNull().default(true),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
+});
+
+// Course purchases. An enrollment for a paid course is created only when its
+// order becomes 'paid' (confirmed by the payment provider), never by the client.
+export const orders = pgTable(
+  'orders',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    studentId: uuid('student_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    courseId: uuid('course_id')
+      .notNull()
+      .references(() => courses.id, { onDelete: 'cascade' }),
+    // Copied from the course when the order is created, so later price changes
+    // don't alter what was charged.
+    amount: numeric('amount', { precision: 10, scale: 2 }).notNull(),
+    currency: varchar('currency', { length: 3 }).notNull().default('EGP'),
+    // 'pending' | 'paid' | 'failed' | 'cancelled'
+    status: varchar('status', { length: 20 }).notNull().default('pending'),
+    // 'test' (local simulator), 'demo' (seed data) or a real provider name.
+    provider: varchar('provider', { length: 30 }).notNull(),
+    providerRef: varchar('provider_ref', { length: 255 }),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    paidAt: timestamp('paid_at'),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  }
+);
+
+// One-time password reset links. Only a SHA-256 hash of the token is stored, so a
+// database leak can't be used to reset passwords.
+export const passwordResetTokens = pgTable('password_reset_tokens', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  tokenHash: varchar('token_hash', { length: 64 }).notNull().unique(),
+  expiresAt: timestamp('expires_at').notNull(),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
 export const instructorApplications = pgTable('instructor_applications', {
@@ -230,6 +273,11 @@ export const lessonResources = pgTable('lesson_resources', {
 export const communityPosts = pgTable('community_posts', {
   id: uuid('id').primaryKey().defaultRandom(),
   courseId: uuid('course_id').references(() => courses.id, { onDelete: 'cascade' }),
+  // Set for posts in a Sanaweya subject community (e.g. Mathematics, Third Year).
+  // Posts with neither a course nor a subject community form the general feed.
+  subjectCommunityId: uuid('subject_community_id').references(() => subjectCommunities.id, {
+    onDelete: 'cascade',
+  }),
   authorId: uuid('author_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),

@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import React, { useEffect, useState } from 'react';
+import { useParams, Link, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Pin,
@@ -30,8 +30,18 @@ export const CourseCommunityPage: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
-  // Expanded replies state
-  const [expandedPostIds, setExpandedPostIds] = useState<{ [postId: string]: boolean }>({});
+  // Expanded replies state. `?post=<id>` (e.g. from the instructor's "Reply to
+  // Student" button) opens that post's replies and scrolls to it.
+  const [searchParams] = useSearchParams();
+  const focusPostId = searchParams.get('post');
+  const [expandedPostIds, setExpandedPostIds] = useState<{ [postId: string]: boolean }>(() =>
+    focusPostId ? { [focusPostId]: true } : {}
+  );
+
+  useEffect(() => {
+    if (!focusPostId || isLoading) return;
+    document.getElementById(`post-${focusPostId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [focusPostId, isLoading]);
 
   // Reply draft text per post
   const [replyDrafts, setReplyDrafts] = useState<{ [postId: string]: string }>({});
@@ -243,7 +253,8 @@ export const CourseCommunityPage: React.FC = () => {
             return (
               <div
                 key={post.id}
-                className={`rounded-2xl p-6 bg-white shadow-sm transition-all ${
+                id={`post-${post.id}`}
+                className={`rounded-2xl p-6 bg-white shadow-sm transition-all scroll-mt-24 ${
                   isPinned
                     ? 'border-2 border-[#2D6A4F] bg-gradient-to-br from-emerald-50/20 via-white to-white'
                     : 'border border-gray-100'

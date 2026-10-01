@@ -12,10 +12,15 @@ View your app in AI Studio: https://ai.studio/apps/1292a787-a31d-4ade-b720-fddd9
 
 **Prerequisites:**  Node.js and Docker
 
-### 1. Start infrastructure (Postgres + pgvector, Redis, MinIO)
+### 1. Start infrastructure (Postgres + pgvector, Redis, MinIO, Mailpit, Whisper, Ollama)
 ```bash
 docker compose up -d
 ```
+
+If you already run Ollama yourself on port 11434, start everything except it:
+`docker compose up -d postgres redis minio mailpit whisper`.
+`WHISPER_API_KEY` in the root `.env` must equal `WHISPER_API_KEY` in `backend/.env`, or every transcript fails with "rejected the API key".
+Emails (welcome, password reset, instructor decisions) go to Mailpit in development: http://localhost:8025.
 
 ### 2. Backend
 ```bash
@@ -35,11 +40,24 @@ Demo accounts (local development only):
 
 ### 3. Frontend (second terminal, project root)
 ```bash
-npm run dev       # starts Vite on http://localhost:5173
+npm run dev       # starts Vite on http://localhost:3000
 ```
 
-The frontend expects the backend at `VITE_API_URL` (default `http://localhost:3001`).
-Health check: `http://localhost:3001/api/health` → `{"status":"ok"}`
+Run `npm run dev` in the project root only once: it starts the **frontend**. It refuses to start if port 3000 is taken (instead of silently taking the backend's port 3001). To start the backend from the root use `npm run dev:backend`.
+
+The frontend expects the backend at `VITE_API_URL` (default `http://localhost:3001`), and the backend builds email links from `FRONTEND_URL` (default `http://localhost:3000`).
+Health check: `http://localhost:3001/api/health` → `{"status":"ok"}` (if you see a web page instead, a frontend is running on the backend's port).
+
+### 4. API tests
+With the backend running, from the `backend` folder:
+```bash
+npm run test:api
+```
+They create their own `*.test` accounts and `QA …` courses and delete them afterwards. Each run uses 3 of the 10 sign-ups allowed per 15 minutes per IP, so run it at most ~3 times in a row.
+
+## Video transcripts
+
+Uploaded lessons are converted to HLS (playable as soon as that finishes), then transcribed by Whisper and embedded for the AI features. If transcription fails (service down, or no speech in the video) the lesson shows **"Video ready, transcript failed"** with the reason and a **Retry transcript** button in the course editor; the original upload is kept until a transcript succeeds so the retry doesn't need a re-upload.
 
 ## Admin dashboard
 
@@ -91,3 +109,15 @@ CREATE TABLE IF NOT EXISTS instructor_applications (
 ```
 
 (`npm run db:push` also creates them on a fresh database.)
+
+Password reset (`/forgot-password`) also needs its table on existing databases:
+
+```sql
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash varchar(64) NOT NULL UNIQUE,
+  expires_at timestamp NOT NULL,
+  created_at timestamp DEFAULT now() NOT NULL
+);
+```

@@ -28,20 +28,24 @@ export interface CommunityPost {
 export interface CommunityFilters {
   search?: string;
   tag?: string;
+  /** Show a Sanaweya subject community's feed instead of the general one. */
+  subjectCommunityId?: string | null;
 }
 
 export const useCommunityPosts = (courseId: string | null, filters: CommunityFilters = {}) => {
   const socket = useSocket();
   const queryClient = useQueryClient();
-  const { search, tag } = filters;
+  const { search, tag, subjectCommunityId } = filters;
 
-  const queryKey = ['community-posts', courseId ?? 'general', { search, tag }];
+  const scope = courseId ?? (subjectCommunityId ? `subject:${subjectCommunityId}` : 'general');
+  const queryKey = ['community-posts', scope, { search, tag }];
 
   const query = useQuery({
     queryKey,
     queryFn: async () => {
       const params: Record<string, string> = {};
       if (courseId) params.courseId = courseId;
+      else if (subjectCommunityId) params.subjectCommunityId = subjectCommunityId;
       if (search) params.search = search;
       if (tag) params.tag = tag;
 
@@ -51,7 +55,11 @@ export const useCommunityPosts = (courseId: string | null, filters: CommunityFil
   });
 
   useEffect(() => {
-    const room = courseId ? `course:${courseId}` : 'community:general';
+    const room = courseId
+      ? `course:${courseId}`
+      : subjectCommunityId
+        ? `subject:${subjectCommunityId}`
+        : 'community:general';
     socket.emit('join_room', room);
 
     const handleNewPost = () => {
@@ -63,7 +71,7 @@ export const useCommunityPosts = (courseId: string | null, filters: CommunityFil
     return () => {
       socket.off('new_post', handleNewPost);
     };
-  }, [socket, courseId, queryClient, queryKey]);
+  }, [socket, courseId, subjectCommunityId, queryClient, queryKey]);
 
-  return { posts: query.data ?? [], isLoading: query.isLoading, error: query.error };
+  return { posts: query.data ?? [], isLoading: query.isLoading, error: query.error, queryKey };
 };

@@ -2,7 +2,16 @@ import { Router, Request, Response } from 'express';
 import { Server } from 'socket.io';
 import { eq, and, isNull, ilike, or, sql, count, inArray } from 'drizzle-orm';
 import { db } from '../db';
-import { communityPosts, communityReplies, postVotes, courses, users, sessions, enrollments } from '../db/schema';
+import {
+  communityPosts,
+  communityReplies,
+  postVotes,
+  courses,
+  users,
+  sessions,
+  enrollments,
+  subjectCommunities,
+} from '../db/schema';
 import { requireAuth, requireRole, isApprovedInstructor } from '../middleware/requireAuth';
 import { generateAnonToken } from '../lib/anonToken';
 import { checkAndAwardBadges } from '../lib/badges';
@@ -60,9 +69,14 @@ async function getCurrentUserId(req: Request): Promise<string | null> {
   return rows[0]?.userId ?? null;
 }
 
-function roomNameForPost(post: { courseId: string | null }) {
-  return post.courseId ? `course:${post.courseId}` : 'community:general';
+function roomNameForPost(post: { courseId: string | null; subjectCommunityId?: string | null }) {
+  if (post.courseId) return `course:${post.courseId}`;
+  if (post.subjectCommunityId) return `subject:${post.subjectCommunityId}`;
+  return 'community:general';
 }
+
+const isUuid = (value: unknown): value is string =>
+  typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
 export function createCommunityRouter(io: Server) {
   const router = Router();
@@ -71,11 +85,22 @@ export function createCommunityRouter(io: Server) {
   router.get('/posts', async (req: Request, res: Response) => {
     try {
       const courseId = (req.query.courseId as string) || null;
+      const subjectCommunityId = (req.query.subjectCommunityId as string) || null;
       const search = (req.query.search as string) || '';
       const tag = (req.query.tag as string) || '';
       const currentUserId = await getCurrentUserId(req);
 
-      const conditions = [courseId ? eq(communityPosts.courseId, courseId) : isNull(communityPosts.courseId)];
+      if (subjectCommunityId && !isUuid(subjectCommunityId)) {
+        return res.status(400).json({ message: 'Invalid subject community' });
+      }
+
+      // Three separate feeds: a course's community, a Sanaweya subject community,
+      // or the general feed (posts with neither).
+      const conditions = courseId
+        ? [eq(communityPosts.courseId, courseId)]
+        : subjectCommunityId
+          ? [eq(communityPosts.subjectCommunityId, subjectCommunityId)]
+          : [isNull(communityPosts.courseId), isNull(communityPosts.subjectCommunityId)];
       if (search) {
         conditions.push(
           or(
@@ -270,14 +295,32 @@ export function createCommunityRouter(io: Server) {
   // POST /api/community/posts
   router.post('/posts', requireAuth, async (req: Request, res: Response) => {
     try {
-      const { content, title, tag, courseId, isAnonymous } = req.body ?? {};
+      const { content, title, tag, courseId, isAnonymous, subjectCommunityId } = req.body ?? {};
       const userId = req.user!.id;
 
       if (!content || typeof content !== 'string' || !content.trim()) {
         return res.status(400).json({ message: 'Content is required' });
       }
 
-      const scopeId = courseId ?? 'general';
+      if (subjectCommunityId !== undefined && subjectCommunityId !== null) {
+        if (courseId) {
+          return res.status(400).json({ message: 'A post belongs to a course or a subject community, not both' });
+        }
+        if (!isUuid(subjectCommunityId)) {
+          return res.status(400).json({ message: 'Invalid subject community' });
+        }
+        const community = await db
+          .select({ id: subjectCommunities.id })
+          .from(subjectCommunities)
+          .where(eq(subjectCommunities.id, subjectCommunityId))
+          .limit(1);
+        if (community.length === 0) {
+          return res.status(404).json({ message: 'Subject community not found' });
+        }
+      }
+
+      // Anonymous identities are per feed, so posts can't be linked across feeds.
+      const scopeId = courseId ?? (subjectCommunityId ? `subject:${subjectCommunityId}` : 'general');
 
       const access = await verifyCourseCommunityAccess(userId, req.user!.role, courseId || null);
       if (!access.allowed) {
@@ -301,6 +344,7 @@ export function createCommunityRouter(io: Server) {
         .insert(communityPosts)
         .values({
           courseId: courseId || null,
+          subjectCommunityId: subjectCommunityId || null,
           authorId: userId,
           isAnonymous: !!isAnonymous,
           anonToken,
@@ -496,23 +540,29 @@ export function createCommunityRouter(io: Server) {
 
       if (!post.isAnonymous && post.authorId !== userId) {
         const authorRows = await db
-          .select({ name: users.name, email: users.email })
+          .select({ name: users.name, email: users.email, notifyCommunity: users.notifyCommunity })
           .from(users)
           .where(eq(users.id, post.authorId))
           .limit(1);
-        if (authorRows.length > 0) {
+        // "Community Discussion Alerts" in Settings turns both the email and the
+        // in-app notification off.
+        if (authorRows.length > 0 && authorRows[0].notifyCommunity) {
           sendCommunityReplyEmail(authorRows[0], {
             title: post.title ?? 'منشورك',
             courseId: post.courseId,
           }).catch(console.warn);
+          createNotification(
+            post.authorId,
+            'community_reply',
+            'رد جديد على سؤالك',
+            'رد شخص ما على منشورك',
+            post.courseId
+              ? `/course/${post.courseId}/community?post=${post.id}`
+              : post.subjectCommunityId
+                ? `/community?community=${post.subjectCommunityId}`
+                : '/community'
+          ).catch(console.warn);
         }
-        createNotification(
-          post.authorId,
-          'community_reply',
-          'رد جديد على سؤالك',
-          'رد شخص ما على منشورك',
-          post.courseId ? `/course/${post.courseId}/community` : '/community'
-        ).catch(console.warn);
       }
 
       await checkAndAwardBadges(userId);

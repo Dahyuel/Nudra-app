@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { Link, useSearchParams } from 'react-router-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   MessageSquare,
   ThumbsUp,
@@ -9,15 +10,35 @@ import {
   EyeOff,
   X,
   Share2,
+  ArrowLeft,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useCommunityPosts } from '../hooks/useCommunityPosts';
 import { PostRepliesSection } from '../components/PostRepliesSection';
+import { PageErrorBanner } from '../components/PageErrorBanner';
+import { SUBJECT_LABELS, GRADE_LABELS } from '../lib/sanaweya';
 import api from '../lib/api';
+
+interface SubjectCommunity {
+  id: string;
+  subject: string;
+  grade: string;
+  description: string | null;
+  postCount: number;
+}
 
 export const CommunityPage: React.FC = () => {
   const { user } = useAuth();
   const queryClient = useQueryClient();
+  // ?community=<id> shows a Sanaweya subject community's own feed.
+  const [searchParams] = useSearchParams();
+  const subjectCommunityId = searchParams.get('community');
+  const { data: subjectCommunity, error: communityError } = useQuery({
+    queryKey: ['subject-community', subjectCommunityId],
+    queryFn: async () =>
+      (await api.get(`/api/sanaweya/subject-communities/${subjectCommunityId}`)).data.community as SubjectCommunity,
+    enabled: !!subjectCommunityId,
+  });
   const [searchFilter, setSearchFilter] = useState('');
   const [selectedTag, setSelectedTag] = useState('All');
   const [showNewPostModal, setShowNewPostModal] = useState(false);
@@ -55,14 +76,14 @@ export const CommunityPage: React.FC = () => {
     setTimeout(() => setToast(null), 2000);
   };
 
-  const { posts, isLoading } = useCommunityPosts(null, {
+  const { posts, isLoading, error: postsError, queryKey } = useCommunityPosts(null, {
     search: searchFilter,
     tag: selectedTag === 'All' ? undefined : selectedTag,
+    subjectCommunityId,
   });
 
   const tags = ['All', 'Web Dev & RTL', 'UI/UX Design', 'Certifications', 'AI & Machine Learning'];
-
-  const queryKey = ['community-posts', 'general', { search: searchFilter, tag: selectedTag === 'All' ? undefined : selectedTag }];
+  const subjectLabel = subjectCommunity ? SUBJECT_LABELS[subjectCommunity.subject] ?? subjectCommunity.subject : null;
 
   const handleLike = async (id: string) => {
     const previous = queryClient.getQueryData<ReturnType<typeof useCommunityPosts>['posts']>(queryKey);
@@ -102,6 +123,7 @@ export const CommunityPage: React.FC = () => {
         tag: newTag,
         isAnonymous,
         courseId: null,
+        subjectCommunityId: subjectCommunityId || undefined,
       });
 
       setNewTitle('');
@@ -109,7 +131,8 @@ export const CommunityPage: React.FC = () => {
       setNewTag('General');
       setIsAnonymous(false);
       setShowNewPostModal(false);
-      queryClient.invalidateQueries({ queryKey: ['community-posts', 'general'] });
+      queryClient.invalidateQueries({ queryKey: queryKey.slice(0, 2) });
+      if (subjectCommunityId) queryClient.invalidateQueries({ queryKey: ['subject-community', subjectCommunityId] });
     } catch (err: any) {
       setSubmitError(err?.response?.data?.message || 'Failed to publish discussion. Please try again.');
     } finally {
@@ -135,14 +158,32 @@ export const CommunityPage: React.FC = () => {
         </div>
       )}
     <div className="space-y-8 animate-in fade-in duration-200">
+      <PageErrorBanner errors={[postsError, communityError]} />
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
+          {subjectCommunityId && (
+            <Link
+              to="/sanaweya"
+              className="inline-flex items-center gap-1 text-xs font-bold text-[#2D6A4F] hover:underline mb-2"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              Back to Sanaweya
+            </Link>
+          )}
           <h1 className="text-2xl sm:text-3xl font-extrabold text-[#1B1B1B] tracking-tight">
-            Learner Community
+            {subjectCommunityId
+              ? subjectCommunity
+                ? `${subjectLabel} Community`
+                : 'Subject Community'
+              : 'Learner Community'}
           </h1>
           <p className="text-sm text-[#6B7280] mt-1">
-            Exchange ideas, ask questions anonymously, and collaborate with peer students
+            {subjectCommunity
+              ? `${GRADE_LABELS[subjectCommunity.grade] ?? subjectCommunity.grade} · ${subjectCommunity.postCount} discussion${
+                  subjectCommunity.postCount === 1 ? '' : 's'
+                }${subjectCommunity.description ? ` · ${subjectCommunity.description}` : ''}`
+              : 'Exchange ideas, ask questions anonymously, and collaborate with peer students'}
           </p>
         </div>
 

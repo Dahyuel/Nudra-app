@@ -10,7 +10,12 @@ const transporter = nodemailer.createTransport({
 });
 
 const FROM: string = process.env.SMTP_FROM || 'noreply@nudra.com';
-const FRONTEND_URL: string = process.env.FRONTEND_URL || 'http://localhost:5173';
+// The Vite dev server runs on port 3000 (see package.json); 5173 linked to nothing.
+const FRONTEND_URL: string = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+// Names and titles are user-provided; escape them before putting them in email HTML.
+const esc = (value: string) =>
+  String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 interface SendEmailOptions {
   to: string;
   subject: string;
@@ -36,7 +41,7 @@ function button(href: string, label: string): string {
 export async function sendWelcomeEmail(user: { name: string; email: string; role: string }): Promise<void> {
   const dashboard = user.role === 'instructor' ? '/instructor/dashboard' : '/dashboard';
   const html = wrapper(
-    `<h2 style="margin:0 0 12px;color:#1B1B1B;font-size:20px;">أهلاً ${user.name}</h2>` +
+    `<h2 style="margin:0 0 12px;color:#1B1B1B;font-size:20px;">أهلاً ${esc(user.name)}</h2>` +
       `<p style="margin:0 0 8px;color:#4B5563;font-size:14px;line-height:1.8;">مرحباً بك في ندرة! يسعدنا انضمامك إلى منصة التعلم الذكية.</p>` +
       `<p style="margin:0;color:#4B5563;font-size:14px;line-height:1.8;">ابدأ رحلتك التعليمية الآن واستكشف المقررات والمساعد الذكي.</p>` +
       button(`${FRONTEND_URL}${dashboard}`, 'ابدأ التعلم الآن')
@@ -50,10 +55,10 @@ export async function sendEnrollmentEmail(
 ): Promise<void> {
   const html = wrapper(
     `<h2 style="margin:0 0 12px;color:#1B1B1B;font-size:20px;">تم تسجيلك بنجاح</h2>` +
-      `<p style="margin:0 0 8px;color:#4B5563;font-size:14px;line-height:1.8;">مرحباً ${user.name}، تم تسجيلك في المقرر التالي:</p>` +
-      `<p style="margin:0 0 8px;color:#2D6A4F;font-size:16px;font-weight:700;">${course.title}</p>` +
+      `<p style="margin:0 0 8px;color:#4B5563;font-size:14px;line-height:1.8;">مرحباً ${esc(user.name)}، تم تسجيلك في المقرر التالي:</p>` +
+      `<p style="margin:0 0 8px;color:#2D6A4F;font-size:16px;font-weight:700;">${esc(course.title)}</p>` +
       `<p style="margin:0;color:#4B5563;font-size:14px;line-height:1.8;">يمكنك الآن البدء بمشاهدة الدروس وإكمال المقرر.</p>` +
-      button(`${FRONTEND_URL}/courses`, 'ابدأ المقرر')
+      button(`${FRONTEND_URL}/my-courses`, 'ابدأ المقرر')
   );
   await sendEmail({ to: user.email, subject: `تم تسجيلك في ${course.title} ✅`, html });
 }
@@ -64,9 +69,9 @@ export async function sendCertificateEmail(
   certCode: string
 ): Promise<void> {
   const html = wrapper(
-    `<h2 style="margin:0 0 12px;color:#1B1B1B;font-size:20px;">تهانينا ${user.name}!</h2>` +
+    `<h2 style="margin:0 0 12px;color:#1B1B1B;font-size:20px;">تهانينا ${esc(user.name)}!</h2>` +
       `<p style="margin:0 0 8px;color:#4B5563;font-size:14px;line-height:1.8;">لقد أتممت بنجاح مقرر:</p>` +
-      `<p style="margin:0 0 8px;color:#2D6A4F;font-size:16px;font-weight:700;">${course.title}</p>` +
+      `<p style="margin:0 0 8px;color:#2D6A4F;font-size:16px;font-weight:700;">${esc(course.title)}</p>` +
       `<p style="margin:0;color:#4B5563;font-size:14px;line-height:1.8;">رقم الشهادة: <span style="font-weight:700;color:#1B1B1B;">${certCode}</span></p>` +
       button(`${FRONTEND_URL}/progress`, 'تحميل الشهادة')
   );
@@ -80,9 +85,21 @@ export async function sendCommunityReplyEmail(
   const link = post.courseId ? `${FRONTEND_URL}/course/${post.courseId}/community` : `${FRONTEND_URL}/community`;
   const html = wrapper(
     `<h2 style="margin:0 0 12px;color:#1B1B1B;font-size:20px;">رد جديد على سؤالك</h2>` +
-      `<p style="margin:0 0 8px;color:#4B5563;font-size:14px;line-height:1.8;">مرحباً ${user.name}، قام شخص ما بالرد على منشورك:</p>` +
-      `<p style="margin:0;color:#2D6A4F;font-size:16px;font-weight:700;">${post.title}</p>` +
+      `<p style="margin:0 0 8px;color:#4B5563;font-size:14px;line-height:1.8;">مرحباً ${esc(user.name)}، قام شخص ما بالرد على منشورك:</p>` +
+      `<p style="margin:0;color:#2D6A4F;font-size:16px;font-weight:700;">${esc(post.title)}</p>` +
       button(link, 'عرض الرد')
   );
   await sendEmail({ to: user.email, subject: 'رد جديد على سؤالك في ندرة 💬', html });
+}
+
+export async function sendPasswordResetEmail(user: { name: string; email: string }, token: string): Promise<void> {
+  const link = `${FRONTEND_URL}/reset-password?token=${encodeURIComponent(token)}`;
+  const html = wrapper(
+    `<h2 style="margin:0 0 12px;color:#1B1B1B;font-size:20px;">إعادة تعيين كلمة المرور</h2>` +
+      `<p style="margin:0 0 8px;color:#4B5563;font-size:14px;line-height:1.8;">مرحباً ${esc(user.name)}، طلبت إعادة تعيين كلمة المرور لحسابك في ندرة.</p>` +
+      `<p style="margin:0 0 8px;color:#4B5563;font-size:14px;line-height:1.8;" dir="ltr">Hi ${esc(user.name)}, use the button below to choose a new Nudra password.</p>` +
+      button(link, 'تعيين كلمة مرور جديدة / Reset password') +
+      `<p style="margin:16px 0 0;color:#9CA3AF;font-size:12px;line-height:1.8;">الرابط صالح لمدة 30 دقيقة ويُستخدم مرة واحدة. إذا لم تطلب ذلك، تجاهل هذه الرسالة. / This link expires in 30 minutes and works once. If you didn't request it, ignore this email.</p>`
+  );
+  await sendEmail({ to: user.email, subject: 'Reset your Nudra password / إعادة تعيين كلمة المرور', html });
 }

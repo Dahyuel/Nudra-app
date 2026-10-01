@@ -27,6 +27,7 @@ import { setIO } from './lib/socket';
 import notificationsRouter from './routes/notifications';
 import searchRouter from './routes/search';
 import adminRouter from './routes/admin';
+import paymentsRouter from './routes/payments';
 import './workers/transcodeWorker';
 
 const app = express();
@@ -140,7 +141,7 @@ app.use(cookieParser());
 
 const limiter = rateLimit({
   windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000),
-  max: Number(process.env.RATE_LIMIT_MAX || 200),
+  max: Number(process.env.RATE_LIMIT_MAX || 1000),
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: 'Too many requests, please try again later' },
@@ -188,7 +189,16 @@ app.use('/api', speedLimiter);
 // Only credential endpoints get the strict limiter; /api/auth/me runs on every
 // page load and must not lock users out.
 app.use('/api/auth/login', loginLimiter);
-app.use(['/api/auth/register', '/api/auth/register-instructor', '/api/auth/password'], authLimiter);
+app.use(
+  [
+    '/api/auth/register',
+    '/api/auth/register-instructor',
+    '/api/auth/password',
+    '/api/auth/forgot-password',
+    '/api/auth/reset-password',
+  ],
+  authLimiter
+);
 app.use('/api/ai', aiLimiter);
 app.use('/api', limiter);
 
@@ -213,6 +223,7 @@ app.use('/api/sanaweya', sanaweyaRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/search', searchRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/payments', paymentsRouter);
 
 const PORT = Number(process.env.PORT) || 3001;
 

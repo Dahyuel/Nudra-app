@@ -9,7 +9,8 @@ from minio import Minio
 
 app = FastAPI()
 
-RAW_BUCKET = "edraky-raw-videos"
+# Must match RAW_VIDEO_BUCKET in backend/src/lib/minio.ts (was a leftover "edraky-raw-videos").
+RAW_BUCKET = os.environ.get("RAW_VIDEO_BUCKET", "nudra-raw-videos")
 API_KEY = os.environ.get("WHISPER_API_KEY") or os.environ.get("SESSION_SECRET")
 
 _model = None
@@ -25,8 +26,8 @@ def get_model() -> WhisperModel:
 def get_minio() -> Minio:
     return Minio(
         f"{os.environ.get('MINIO_ENDPOINT', 'localhost')}:{os.environ.get('MINIO_PORT', '9000')}",
-        access_key=os.environ.get("MINIO_ACCESS_KEY", "edraky_minio"),
-        secret_key=os.environ.get("MINIO_SECRET_KEY", "edraky_minio_secret"),
+        access_key=os.environ.get("MINIO_ACCESS_KEY", "nudra_minio"),
+        secret_key=os.environ.get("MINIO_SECRET_KEY", "nudra_minio_secret"),
         secure=os.environ.get("MINIO_USE_SSL", "false").lower() == "true",
     )
 
@@ -52,7 +53,9 @@ async def transcribe(payload: dict):
         client.fget_object(RAW_BUCKET, minio_key, local_path)
 
         model = get_model()
-        segments_iter, _info = model.transcribe(local_path, language=None, beam_size=5)
+        # vad_filter skips non-speech; without it Whisper hallucinates text (e.g. "You")
+        # on silent or music-only videos, which would feed junk into the AI features.
+        segments_iter, _info = model.transcribe(local_path, language=None, beam_size=5, vad_filter=True)
 
         segments = []
         text_parts = []

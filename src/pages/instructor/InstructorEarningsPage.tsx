@@ -11,12 +11,14 @@ import {
   Cell,
 } from 'recharts';
 import { useInstructorEarnings } from '../../hooks/useInstructorEarnings';
+import { PageErrorBanner } from '../../components/PageErrorBanner';
 
 export const InstructorEarningsPage: React.FC = () => {
-  const { earnings, summary, courseEarnings, isLoading } = useInstructorEarnings();
+  const { earnings, summary, courseEarnings, isLoading, error } = useInstructorEarnings();
 
   return (
     <div className="space-y-8 animate-in fade-in duration-200">
+      <PageErrorBanner errors={[error]} />
       <div>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-[#1B1B1B] tracking-tight">
           Earnings

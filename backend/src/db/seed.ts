@@ -21,6 +21,8 @@ import {
   sanaweyaProfiles,
   pastExams,
   subjectCommunities,
+  lessonProgress,
+  orders,
 } from './schema';
 import { generateAnonToken } from '../lib/anonToken';
 
@@ -117,6 +119,11 @@ async function seedCourse(params: {
       originalPrice: originalPrice ?? null,
       durationText: durationText ?? null,
       isPublished,
+      // These were destructured above but never written, so no seeded course
+      // appeared on the Sanaweya pages.
+      sanaweyaGrade: sanaweyaGrade ?? null,
+      sanaweyaSubject: sanaweyaSubject ?? null,
+      ministryAligned: ministryAligned ?? false,
     })
     .returning();
 
@@ -150,6 +157,110 @@ async function seedCourse(params: {
 
   console.log(`Inserted course: ${title}`);
   return course;
+}
+
+/**
+ * Enrol a student with progress that is backed by real lesson_progress rows.
+ * The app recalculates enrollments.progress from completed lessons, so a bare
+ * percentage (what this seed used to insert) dropped to 0% the first time the
+ * student touched a lesson, and the lesson list showed nothing completed.
+ * Also repairs an existing enrollment that has a percentage but no lesson rows.
+ */
+/**
+ * Seeded enrollments in paid courses get a matching 'paid' order (provider 'demo')
+ * so revenue dashboards have data. Real purchases go through /api/payments.
+ */
+async function seedDemoOrder(studentId: string, course: { id: string; price: string }, label: string) {
+  if (Number(course.price) <= 0) return;
+  const existing = await db
+    .select({ id: orders.id })
+    .from(orders)
+    .where(and(eq(orders.studentId, studentId), eq(orders.courseId, course.id), eq(orders.status, 'paid')))
+    .limit(1);
+  if (existing.length > 0) {
+    console.log(`Skipped demo order ${label} — already exists`);
+    return;
+  }
+  const [enrollment] = await db
+    .select({ enrolledAt: enrollments.enrolledAt })
+    .from(enrollments)
+    .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, course.id)))
+    .limit(1);
+  const paidAt = enrollment?.enrolledAt ?? new Date();
+  await db.insert(orders).values({
+    studentId,
+    courseId: course.id,
+    amount: course.price,
+    status: 'paid',
+    provider: 'demo',
+    providerRef: 'seed',
+    createdAt: paidAt,
+    paidAt,
+  });
+  console.log(`Inserted demo order ${label}: ${course.price} EGP`);
+}
+
+async function enrollWithProgress(studentId: string, courseId: string, targetPercent: number, label: string) {
+  const ordered = await db
+    .select({ id: lessons.id, durationText: lessons.durationText })
+    .from(lessons)
+    .innerJoin(courseSections, eq(lessons.sectionId, courseSections.id))
+    .where(eq(lessons.courseId, courseId))
+    .orderBy(courseSections.position, lessons.position);
+  if (ordered.length === 0) return;
+
+  const completedCount = Math.min(ordered.length, Math.round((targetPercent / 100) * ordered.length));
+  // Same formula as recalcCourseProgress in routes/progress.ts.
+  const progress = Math.round((completedCount / ordered.length) * 100);
+  const resumeLesson = ordered[Math.min(completedCount, ordered.length - 1)];
+
+  const existing = await db
+    .select()
+    .from(enrollments)
+    .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, courseId)))
+    .limit(1);
+  const existingRows = await db
+    .select({ id: lessonProgress.id })
+    .from(lessonProgress)
+    .where(and(eq(lessonProgress.studentId, studentId), eq(lessonProgress.courseId, courseId)))
+    .limit(1);
+  if (existing.length > 0 && existingRows.length > 0) {
+    console.log(`Skipped enrollment ${label} — already exists with lesson progress`);
+    return;
+  }
+
+  const toSeconds = (d: string | null) => {
+    const [m, s] = (d ?? '').split(':').map(Number);
+    return Number.isFinite(m) ? m * 60 + (Number.isFinite(s) ? s : 0) : 600;
+  };
+  const day = 24 * 60 * 60 * 1000;
+
+  await db.transaction(async (tx) => {
+    for (let i = 0; i < completedCount; i++) {
+      await tx
+        .insert(lessonProgress)
+        .values({
+          studentId,
+          lessonId: ordered[i].id,
+          courseId,
+          watchedSeconds: toSeconds(ordered[i].durationText),
+          completed: true,
+          completedAt: new Date(Date.now() - (completedCount - i) * day),
+        })
+        .onConflictDoNothing();
+    }
+    if (existing.length > 0) {
+      await tx
+        .update(enrollments)
+        .set({ progress, lastLessonId: resumeLesson.id })
+        .where(eq(enrollments.id, existing[0].id));
+    } else {
+      await tx.insert(enrollments).values({ studentId, courseId, progress, lastLessonId: resumeLesson.id });
+    }
+  });
+  console.log(
+    `${existing.length > 0 ? 'Repaired' : 'Inserted'} enrollment ${label}: ${completedCount}/${ordered.length} lessons (${progress}%)`
+  );
 }
 
 async function main() {
@@ -370,51 +481,11 @@ async function main() {
     ],
   });
 
-  const existingEnrollment1 = await db
-    .select()
-    .from(enrollments)
-    .where(and(eq(enrollments.studentId, student.id), eq(enrollments.courseId, course1.id)))
-    .limit(1);
-  if (existingEnrollment1.length === 0) {
-    const firstLesson = await db
-      .select()
-      .from(lessons)
-      .where(eq(lessons.courseId, course1.id))
-      .orderBy(lessons.position)
-      .limit(1);
-    await db.insert(enrollments).values({
-      studentId: student.id,
-      courseId: course1.id,
-      progress: 68,
-      lastLessonId: firstLesson[0]?.id ?? null,
-    });
-    console.log('Inserted enrollment: student -> Course 1 (68%)');
-  } else {
-    console.log('Skipped enrollment student -> Course 1 — already exists');
-  }
+  await enrollWithProgress(student.id, course1.id, 68, 'student -> Course 1');
+  await seedDemoOrder(student.id, course1, 'student -> Course 1');
 
-  const existingEnrollment3 = await db
-    .select()
-    .from(enrollments)
-    .where(and(eq(enrollments.studentId, student.id), eq(enrollments.courseId, course3.id)))
-    .limit(1);
-  if (existingEnrollment3.length === 0) {
-    const firstLesson3 = await db
-      .select()
-      .from(lessons)
-      .where(eq(lessons.courseId, course3.id))
-      .orderBy(lessons.position)
-      .limit(1);
-    await db.insert(enrollments).values({
-      studentId: student.id,
-      courseId: course3.id,
-      progress: 30,
-      lastLessonId: firstLesson3[0]?.id ?? null,
-    });
-    console.log('Inserted enrollment: student -> Course 3 (30%)');
-  } else {
-    console.log('Skipped enrollment student -> Course 3 — already exists');
-  }
+  await enrollWithProgress(student.id, course3.id, 30, 'student -> Course 3');
+  await seedDemoOrder(student.id, course3, 'student -> Course 3');
 
   const existingReview = await db
     .select()
@@ -492,28 +563,8 @@ async function main() {
     console.log('Skipped sanaweya profile — already exists');
   }
 
-  const existingSanaweyaEnrollment = await db
-    .select()
-    .from(enrollments)
-    .where(and(eq(enrollments.studentId, student.id), eq(enrollments.courseId, course5.id)))
-    .limit(1);
-  if (existingSanaweyaEnrollment.length === 0) {
-    const firstLesson5 = await db
-      .select()
-      .from(lessons)
-      .where(eq(lessons.courseId, course5.id))
-      .orderBy(lessons.position)
-      .limit(1);
-    await db.insert(enrollments).values({
-      studentId: student.id,
-      courseId: course5.id,
-      progress: 45,
-      lastLessonId: firstLesson5[0]?.id ?? null,
-    });
-    console.log('Inserted enrollment: student -> Course 5 Sanaweya (45%)');
-  } else {
-    console.log('Skipped enrollment student -> Course 5 — already exists');
-  }
+  await enrollWithProgress(student.id, course5.id, 45, 'student -> Course 5 Sanaweya');
+  await seedDemoOrder(student.id, course5, 'student -> Course 5 Sanaweya');
 
   const existingPastExams = await db.select({ id: pastExams.id }).from(pastExams).limit(1);
   if (existingPastExams.length === 0) {

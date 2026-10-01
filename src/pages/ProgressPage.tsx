@@ -28,6 +28,8 @@ import {
   Legend
 } from 'recharts';
 import { useAuth } from '../context/AuthContext';
+import { PageErrorBanner } from '../components/PageErrorBanner';
+import { WeakTopicsCard } from '../components/WeakTopicsCard';
 import { useProgressStats } from '../hooks/useProgressStats';
 import { useCertificates } from '../hooks/useCertificates';
 import { withErrorBoundary } from '../components/withErrorBoundary';
@@ -43,8 +45,8 @@ const BADGE_ICONS: Record<string, any> = {
 
 const ProgressPageInner: React.FC = () => {
   const { user } = useAuth();
-  const { stats, isLoading } = useProgressStats();
-  const { certificates, isLoading: certsLoading } = useCertificates();
+  const { stats, isLoading, error: statsError } = useProgressStats();
+  const { certificates, isLoading: certsLoading, error: certsError } = useCertificates();
   const [selectedCert, setSelectedCert] = useState<any | null>(null);
 
   const weeklyHoursData = stats?.weeklyHours ?? [];
@@ -53,6 +55,7 @@ const ProgressPageInner: React.FC = () => {
 
   return (
     <div className="space-y-8 animate-in fade-in duration-200">
+      <PageErrorBanner errors={[statsError, certsError]} />
       {/* Title */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -199,6 +202,9 @@ const ProgressPageInner: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* AI weak-topic analysis from the student's quiz results */}
+      <WeakTopicsCard />
 
       {/* 2. Achievements Section: Badge Grid (with locked badges grayed out) */}
       <div className="rounded-2xl p-6 bg-white border border-gray-100 shadow-sm space-y-5">

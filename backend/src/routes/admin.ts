@@ -54,9 +54,9 @@ router.get('/stats/overview', async (_req: Request, res: Response) => {
           COUNT(*)                                       AS total_enrollments,
           COUNT(*) FILTER (WHERE e.progress >= 100)      AS completed_enrollments,
           AVG(e.progress)                                AS avg_progress,
-          COALESCE(SUM(c.price), 0)                      AS enrollment_value
+          (SELECT COALESCE(SUM(amount), 0) FROM orders WHERE status = 'paid') AS revenue,
+          (SELECT COUNT(*) FROM orders WHERE status = 'paid')                 AS paid_orders
         FROM enrollments e
-        JOIN courses c ON c.id = e.course_id
       `),
       db.execute(sql`
         SELECT
@@ -113,8 +113,9 @@ router.get('/stats/overview', async (_req: Request, res: Response) => {
         completed,
         completionRate: totalEnrollments ? num((completed / totalEnrollments) * 100, 1) : 0,
         avgProgress: num(e.avg_progress, 1),
-        // No payment system yet: this is the list-price value of all enrollments.
-        enrollmentValue: num(e.enrollment_value, 2),
+        // Money actually paid (paid orders), not list price x enrollments.
+        revenue: num(e.revenue, 2),
+        paidOrders: num(e.paid_orders),
       },
       activity: {
         quizAttempts: num(a.quiz_attempts),
@@ -155,7 +156,9 @@ router.get('/stats/courses', async (_req: Request, res: Response) => {
         rv.avg_rating,
         COALESCE(rv.reviews, 0)                     AS reviews,
         COALESCE(qa.attempts, 0)                    AS quiz_attempts,
-        qa.avg_score                                AS avg_quiz_score
+        qa.avg_score                                AS avg_quiz_score,
+        COALESCE(po.revenue, 0)                     AS revenue,
+        COALESCE(po.paid_orders, 0)                 AS paid_orders
       FROM courses c
       JOIN users u ON u.id = c.instructor_id
       LEFT JOIN (
@@ -173,6 +176,10 @@ router.get('/stats/courses', async (_req: Request, res: Response) => {
       LEFT JOIN (
         SELECT course_id, COUNT(*) AS attempts, AVG(percentage) AS avg_score FROM quiz_attempts GROUP BY course_id
       ) qa ON qa.course_id = c.id
+      LEFT JOIN (
+        SELECT course_id, SUM(amount) AS revenue, COUNT(*) AS paid_orders
+        FROM orders WHERE status = 'paid' GROUP BY course_id
+      ) po ON po.course_id = c.id
       ORDER BY COALESCE(en.enrollments, 0) DESC, c.created_at DESC
     `);
 
@@ -191,7 +198,8 @@ router.get('/stats/courses', async (_req: Request, res: Response) => {
         enrollments,
         completed: num(r.completed),
         avgProgress: num(r.avg_progress, 1),
-        enrollmentValue: num(enrollments * price, 2),
+        revenue: num(r.revenue, 2),
+        paidOrders: num(r.paid_orders),
         avgRating: r.avg_rating === null ? null : num(r.avg_rating, 1),
         reviews: num(r.reviews),
         quizAttempts: num(r.quiz_attempts),

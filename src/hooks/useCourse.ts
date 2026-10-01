@@ -48,7 +48,10 @@ export interface CourseDetail {
   lessonsCount: number;
   curriculum: CourseSection[];
   reviews: CourseReview[];
+  /** Number of reviews per star value ("1".."5"), not percentages. */
   ratingBreakdown: Record<string, number>;
+  /** The signed-in student's own review, if they left one. */
+  my_review: { rating: number; comment: string | null } | null;
   is_enrolled: boolean;
   progress: number;
   last_lesson_id: string | null;

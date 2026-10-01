@@ -573,6 +573,11 @@ router.post('/weak-topics/:courseId', requireRole('student'), weakTopicsLimiter,
     return res.json(result);
   } catch (err) {
     console.error('weak topics error', err);
+    // chatCompletion throws these when the LLM proxy is down or rejects us.
+    const message = err instanceof Error ? err.message : '';
+    if (/AI service|DeepSeek proxy|AI request failed/i.test(message)) {
+      return res.status(503).json({ message: 'The AI service is unavailable right now. Please try again later.' });
+    }
     return res.status(500).json({ message: 'Internal server error' });
   }
 });

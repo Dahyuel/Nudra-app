@@ -215,10 +215,30 @@
   color: var(--d-text);
 }
 
-/* Status colours readable on dark surfaces */
+/* Status colours readable on dark surfaces (badges, warnings, errors) */
 .dark .text-red-600,
-.dark .text-red-500 {
+.dark .text-red-500,
+.dark .text-red-700 {
   color: #f87171;
+}
+.dark .text-emerald-600,
+.dark .text-emerald-800 {
+  color: #6ee7b7;
+}
+.dark .text-amber-600,
+.dark .text-amber-700,
+.dark .text-amber-800,
+.dark .text-amber-900 {
+  color: #fcd34d;
+}
+.dark .text-blue-600 {
+  color: #93c5fd;
+}
+.dark .bg-amber-100 {
+  background-color: rgb(245 158 11 / 0.2);
+}
+.dark .bg-red-100 {
+  background-color: rgb(239 68 68 / 0.2);
 }
 .dark .border-red-200 {
   border-color: rgb(248 113 113 / 0.4);

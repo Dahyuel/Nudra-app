@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { eq, and, sql, count, avg, inArray, desc, isNull, type SQL } from 'drizzle-orm';
+import { eq, and, sql, count, avg, inArray, desc, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   courses,
@@ -169,8 +169,10 @@ router.get('/courses', async (req: Request, res: Response) => {
     const search = (req.query.search as string) ?? '';
     const price = (req.query.price as string) ?? '';
     const ministryAligned = req.query.ministryAligned === 'true';
-    const page = Math.max(1, Number(req.query.page) ?? 1);
-    const limit = Math.max(1, Number(req.query.limit) ?? 20);
+    // `Number(undefined) ?? 1` is NaN (?? doesn't catch NaN), which made the
+    // query return nothing when no page/limit was sent. Clamp limit too.
+    const page = Math.max(1, Math.floor(Number(req.query.page)) || 1);
+    const limit = Math.min(100, Math.max(1, Math.floor(Number(req.query.limit)) || 20));
     const offset = (page - 1) * limit;
 
     const conditions: SQL[] = [eq(courses.isPublished, true), sql`${courses.sanaweyaGrade} is not null`];
@@ -288,6 +290,25 @@ router.post(
   }
 );
 
+router.get('/subject-communities/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+      return res.status(400).json({ message: 'Invalid subject community' });
+    }
+    const rows = await db.select().from(subjectCommunities).where(eq(subjectCommunities.id, id)).limit(1);
+    if (rows.length === 0) return res.status(404).json({ message: 'Subject community not found' });
+    const postCount = await db
+      .select({ count: count(communityPosts.id) })
+      .from(communityPosts)
+      .where(eq(communityPosts.subjectCommunityId, id));
+    return res.json({ community: { ...rows[0], postCount: Number(postCount[0]?.count) || 0 } });
+  } catch (err) {
+    console.error('sanaweya subject community error', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 router.get('/subject-communities', async (req: Request, res: Response) => {
   try {
     const grade = (req.query.grade as string) ?? '';
@@ -301,10 +322,10 @@ router.get('/subject-communities', async (req: Request, res: Response) => {
         const postCount = await db
           .select({ count: count(communityPosts.id) })
           .from(communityPosts)
-          .where(and(eq(communityPosts.tag, community.subject), isNull(communityPosts.courseId)));
+          .where(eq(communityPosts.subjectCommunityId, community.id));
         return {
           ...community,
-          postCount: Number(postCount[0]?.count) | 0,
+          postCount: Number(postCount[0]?.count) || 0,
         };
       })
     );
@@ -374,8 +395,8 @@ router.get('/dashboard', requireAuth, requireRole('student'), async (req: Reques
         const postCount = await db
           .select({ count: count(communityPosts.id) })
           .from(communityPosts)
-          .where(and(eq(communityPosts.tag, community.subject), isNull(communityPosts.courseId)));
-        return { ...community, postCount: Number(postCount[0]?.count) | 0 };
+          .where(eq(communityPosts.subjectCommunityId, community.id));
+        return { ...community, postCount: Number(postCount[0]?.count) || 0 };
       })
     );
 

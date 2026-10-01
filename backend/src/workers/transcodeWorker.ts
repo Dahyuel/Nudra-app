@@ -9,7 +9,7 @@ import axios from 'axios';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { videoJobs, lessons, lessonChunks } from '../db/schema';
-import { minioClient, RAW_VIDEO_BUCKET, HLS_BUCKET, getHlsPlaylistKey } from '../lib/minio';
+import { minioClient, RAW_VIDEO_BUCKET, HLS_BUCKET, getHlsPlaylistKey, listRawVideoKeys } from '../lib/minio';
 import { embedText } from '../lib/embeddings';
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
@@ -81,10 +81,99 @@ function runFfmpeg(inputPath: string, outputDir: string): Promise<void> {
   });
 }
 
+async function removeRawVideos(lessonId: string) {
+  for (const key of await listRawVideoKeys(lessonId)) {
+    try {
+      await minioClient.removeObject(RAW_VIDEO_BUCKET, key);
+    } catch (err) {
+      console.warn(`failed to remove raw video ${key}`, err);
+    }
+  }
+}
+
+/**
+ * Whisper transcript + embeddings for the AI features (summary, flashcards, quiz
+ * generation, tutor context). Throws with a readable message on failure so the
+ * job can be marked `transcript_failed` instead of silently reporting success.
+ */
+async function transcribeAndEmbed(lessonId: string, minioKey: string) {
+  let transcriptText: string;
+  let transcriptSegments: string | null;
+  try {
+    const { data } = await axios.post(
+      `${WHISPER_URL}/transcribe`,
+      { minio_key: minioKey },
+      {
+        headers: { 'X-API-Key': process.env.WHISPER_API_KEY || process.env.SESSION_SECRET || '' },
+        timeout: 30 * 60 * 1000,
+      }
+    );
+    transcriptText = (data.transcript ?? '').trim();
+    transcriptSegments = data.segments ? JSON.stringify(data.segments) : null;
+  } catch (err) {
+    if (axios.isAxiosError(err)) {
+      if (!err.response) throw new Error(`Transcription service unreachable at ${WHISPER_URL}`);
+      if (err.response.status === 401) throw new Error('Transcription service rejected the API key (check WHISPER_API_KEY)');
+      throw new Error(`Transcription failed (HTTP ${err.response.status})`);
+    }
+    throw err;
+  }
+
+  if (!transcriptText) throw new Error('No speech was detected in this video');
+
+  // Short transcripts fall below the chunk minimum; keep them as a single chunk.
+  const chunks = chunkText(transcriptText);
+  if (chunks.length === 0) chunks.push(transcriptText);
+
+  let embeddings: number[][];
+  try {
+    embeddings = [];
+    for (const chunk of chunks) embeddings.push(await embedText(chunk));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Transcript created but embedding failed: ${message}`);
+  }
+
+  // Replace any chunks from an earlier attempt so retries don't duplicate them.
+  await db.transaction(async (tx) => {
+    await tx.delete(lessonChunks).where(eq(lessonChunks.lessonId, lessonId));
+    for (let i = 0; i < chunks.length; i++) {
+      await tx.insert(lessonChunks).values({
+        lessonId,
+        chunkIndex: i,
+        content: chunks[i],
+        embedding: sql`${JSON.stringify(embeddings[i])}::vector(768)`,
+      });
+    }
+  });
+  console.log(`embedded ${chunks.length} chunks for lesson ${lessonId}`);
+
+  return { transcriptText, transcriptSegments };
+}
+
 const worker = new Worker(
   'video-transcoding',
   async (job) => {
-    const { lessonId, minioKey } = job.data as { lessonId: string; minioKey: string };
+    const { lessonId, minioKey, transcriptOnly } = job.data as {
+      lessonId: string;
+      minioKey: string;
+      transcriptOnly?: boolean;
+    };
+
+    // Retry path: the video is already transcoded; only redo the transcript.
+    if (transcriptOnly) {
+      try {
+        await setJobStatus(lessonId, { status: 'transcribed', errorMsg: null });
+        const result = await transcribeAndEmbed(lessonId, minioKey);
+        await removeRawVideos(lessonId);
+        await setJobStatus(lessonId, { status: 'done', ...result });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`transcript retry failed for lesson ${lessonId}: ${message}`);
+        await setJobStatus(lessonId, { status: 'transcript_failed', errorMsg: message }).catch(() => {});
+      }
+      return;
+    }
 
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nudra-transcode-'));
     const rawPath = path.join(tmpDir, path.basename(minioKey));
@@ -113,58 +202,20 @@ const worker = new Worker(
 
       await db.update(lessons).set({ videoUrl: hlsPath }).where(eq(lessons.id, lessonId));
 
+      // Video is playable from here on; the transcript step runs next.
       await setJobStatus(lessonId, { status: 'transcribed', hlsUrl: hlsPath });
 
-      let transcriptText: string | null = null;
-      let transcriptSegments: string | null = null;
-
       try {
-        const { data } = await axios.post(
-          `${WHISPER_URL}/transcribe`,
-          { minio_key: minioKey },
-          { headers: { 'X-API-Key': process.env.WHISPER_API_KEY || process.env.SESSION_SECRET || '' } }
-        );
-        transcriptText = data.transcript ?? null;
-        transcriptSegments = data.segments ? JSON.stringify(data.segments) : null;
-      } catch (whisperErr) {
-        console.error('whisper transcription error', whisperErr);
+        const result = await transcribeAndEmbed(lessonId, minioKey);
+        // Only delete the raw upload once everything succeeded: Whisper reads the
+        // raw file, so keeping it on failure is what makes "Retry transcript" possible.
+        await removeRawVideos(lessonId);
+        await setJobStatus(lessonId, { status: 'done', ...result });
+      } catch (transcriptErr) {
+        const message = transcriptErr instanceof Error ? transcriptErr.message : String(transcriptErr);
+        console.error(`transcript failed for lesson ${lessonId}: ${message}`);
+        await setJobStatus(lessonId, { status: 'transcript_failed', errorMsg: message });
       }
-
-      // Step I — Chunk and embed transcript
-      if (transcriptText && transcriptText.length >= MIN_CHUNK_SIZE) {
-        try {
-          const chunks = chunkText(transcriptText);
-
-          for (let i = 0; i < chunks.length; i++) {
-            const embedding = await embedText(chunks[i]);
-            await db.insert(lessonChunks).values({
-              lessonId,
-              chunkIndex: i,
-              content: chunks[i],
-              embedding: sql`${JSON.stringify(embedding)}::vector(768)`,
-            });
-          }
-
-          console.log(`embedded ${chunks.length} chunks for lesson ${lessonId}`);
-        } catch (embedErr) {
-          const message = embedErr instanceof Error ? embedErr.message : String(embedErr);
-          console.warn(`embedding failed for lesson ${lessonId}: ${message}`);
-        }
-      }
-
-      // Remove raw source video from private storage after successful transcoding
-      try {
-        await minioClient.removeObject(RAW_VIDEO_BUCKET, minioKey);
-        console.log(`removed raw video for lesson ${lessonId}`);
-      } catch (removeErr) {
-        console.warn(`failed to remove raw video for lesson ${lessonId}`, removeErr);
-      }
-
-      await setJobStatus(lessonId, {
-        status: 'done',
-        transcriptText,
-        transcriptSegments,
-      });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('transcode worker error', err);

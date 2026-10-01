@@ -23,6 +23,7 @@ import { FocusTimer } from '../components/FocusTimer';
 import { ProgressArc } from '../components/ProgressArc';
 import { TopInstructorsCard } from '../components/TopInstructorsCard';
 import { useAuth } from '../context/AuthContext';
+import { PageErrorBanner } from '../components/PageErrorBanner';
 import { useMyEnrollments } from '../hooks/useMyEnrollments';
 import { useProgressStats } from '../hooks/useProgressStats';
 import { useQuery } from '@tanstack/react-query';
@@ -30,8 +31,8 @@ import api from '../lib/api';
 
 export const DashboardPage: React.FC = () => {
   const { user } = useAuth();
-  const { enrollments, isLoading } = useMyEnrollments();
-  const { stats } = useProgressStats();
+  const { enrollments, isLoading, error: enrollmentsError } = useMyEnrollments();
+  const { stats, error: statsError } = useProgressStats();
 
   const completedCount = enrollments.filter((e) => e.progress === 100).length;
   const inProgress = enrollments.filter((e) => e.progress < 100);
@@ -86,6 +87,7 @@ export const DashboardPage: React.FC = () => {
 
   return (
     <div className="space-y-8 animate-in fade-in duration-200">
+      <PageErrorBanner errors={[enrollmentsError, statsError]} />
       {/* Page Header - Donezo style */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>

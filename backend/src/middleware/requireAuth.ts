@@ -28,6 +28,9 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
         avatarUrl: users.avatarUrl,
         grade: users.grade,
         instructorStatus: users.instructorStatus,
+        preferredLanguage: users.preferredLanguage,
+        notifyCommunity: users.notifyCommunity,
+        notifySessions: users.notifySessions,
         createdAt: users.createdAt,
         updatedAt: users.updatedAt,
       })

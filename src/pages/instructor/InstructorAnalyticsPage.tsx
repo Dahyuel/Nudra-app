@@ -4,6 +4,7 @@ import { AlertTriangle, TrendingUp } from 'lucide-react';
 import api from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
 import { useInstructorCourses } from '../../hooks/useInstructorCourses';
+import { PageErrorBanner } from '../../components/PageErrorBanner';
 import { withErrorBoundary } from '../../components/withErrorBoundary';
 
 interface QuestionStat {
@@ -30,7 +31,7 @@ interface FunnelRow {
 
 const InstructorAnalyticsPageInner: React.FC = () => {
   const { user } = useAuth();
-  const { courses, isLoading: coursesLoading } = useInstructorCourses();
+  const { courses, isLoading: coursesLoading, error: coursesError } = useInstructorCourses();
   const [selectedCourseId, setSelectedCourseId] = useState('');
 
   useEffect(() => {
@@ -39,7 +40,7 @@ const InstructorAnalyticsPageInner: React.FC = () => {
     }
   }, [courses, selectedCourseId]);
 
-  const { data: quizAnalytics = [], isLoading: quizLoading } = useQuery({
+  const { data: quizAnalytics = [], isLoading: quizLoading, error: quizError } = useQuery({
     queryKey: ['quiz-analytics', selectedCourseId],
     queryFn: async () => {
       const { data } = await api.get(`/api/instructor/courses/${selectedCourseId}/quiz-analytics`);
@@ -48,7 +49,7 @@ const InstructorAnalyticsPageInner: React.FC = () => {
     enabled: !!selectedCourseId,
   });
 
-  const { data: funnel = [], isLoading: funnelLoading } = useQuery({
+  const { data: funnel = [], isLoading: funnelLoading, error: funnelError } = useQuery({
     queryKey: ['instructor-analytics', user?.id],
     queryFn: async () => {
       const { data } = await api.get('/api/instructor/analytics');
@@ -59,6 +60,7 @@ const InstructorAnalyticsPageInner: React.FC = () => {
 
   return (
     <div className="space-y-8 animate-in fade-in duration-200">
+      <PageErrorBanner errors={[coursesError, quizError, funnelError]} />
       <div>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-[#1B1B1B] tracking-tight">
           Analytics

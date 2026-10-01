@@ -24,11 +24,13 @@ import {
 import { useQuery } from '@tanstack/react-query';
 import { useInstructorCourses } from '../../hooks/useInstructorCourses';
 import { useInstructorEarnings } from '../../hooks/useInstructorEarnings';
+import { PageErrorBanner } from '../../components/PageErrorBanner';
 import api from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
 
 interface CommunityQuestion {
   postId: string;
+  courseId: string | null;
   content: string;
   courseTitle: string;
   createdAt: string;
@@ -36,12 +38,12 @@ interface CommunityQuestion {
 }
 
 export const InstructorDashboardPage: React.FC = () => {
-  const { courses, isLoading } = useInstructorCourses();
+  const { courses, isLoading, error: coursesError } = useInstructorCourses();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { earnings } = useInstructorEarnings();
+  const { earnings, error: earningsError } = useInstructorEarnings();
 
-  const { data: communityQuestions = [] } = useQuery({
+  const { data: communityQuestions = [], error: questionsError } = useQuery({
     queryKey: ['instructor-community-questions', user?.id],
     queryFn: async () => {
       const { data } = await api.get('/api/instructor/community-questions');
@@ -73,6 +75,7 @@ export const InstructorDashboardPage: React.FC = () => {
     () =>
       communityQuestions.map((q) => ({
         id: q.postId,
+        courseId: q.courseId,
         courseName: q.courseTitle,
         question: q.content,
         timeAgo: new Date(q.createdAt).toLocaleDateString(),
@@ -83,6 +86,7 @@ export const InstructorDashboardPage: React.FC = () => {
 
   return (
     <div className="space-y-8 animate-in fade-in duration-200">
+      <PageErrorBanner errors={[coursesError, earningsError, questionsError]} />
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -285,7 +289,9 @@ export const InstructorDashboardPage: React.FC = () => {
 
                 <div className="flex justify-end pt-1">
                   <button
-                    onClick={() => navigate(`/course/${q.id}/community`)}
+                    onClick={() =>
+                      navigate(q.courseId ? `/course/${q.courseId}/community?post=${q.id}` : '/community')
+                    }
                     className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-white border border-gray-200 text-xs font-bold text-[#2D6A4F] hover:bg-[#2D6A4F] hover:text-white transition-colors shadow-2xs"
                   >
                     <MessageSquare className="w-3.5 h-3.5" />

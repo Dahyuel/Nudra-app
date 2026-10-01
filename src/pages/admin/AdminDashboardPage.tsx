@@ -39,7 +39,7 @@ import { useAuth } from '../../context/AuthContext';
 interface Overview {
   users: { students: number; instructors: number; pendingApplications: number; admins: number; newLast30Days: number };
   courses: { total: number; published: number; drafts: number; lessons: number; lessonsWithVideo: number };
-  enrollments: { total: number; completed: number; completionRate: number; avgProgress: number; enrollmentValue: number };
+  enrollments: { total: number; completed: number; completionRate: number; avgProgress: number; revenue: number; paidOrders: number };
   activity: { quizAttempts: number; avgQuizScore: number; communityPosts: number; communityReplies: number; certificates: number };
   monthly: { month: string; enrollments: number; newUsers: number }[];
 }
@@ -56,7 +56,8 @@ interface CourseStat {
   enrollments: number;
   completed: number;
   avgProgress: number;
-  enrollmentValue: number;
+  revenue: number;
+  paidOrders: number;
   avgRating: number | null;
   reviews: number;
   quizAttempts: number;
@@ -79,7 +80,7 @@ interface Application {
   reviewedAt: string | null;
 }
 
-type Tab = 'overview' | 'courses' | 'applications';
+type Tab = 'overview' | 'courses' | 'applications' | 'account';
 
 // ---------- Helpers ----------
 
@@ -183,7 +184,7 @@ const OverviewTab: React.FC<{ onOpenApplications: () => void }> = ({ onOpenAppli
         <Tile label="Lessons" value={courses.lessons} hint={`${courses.lessonsWithVideo} with video`} icon={PlayCircle} />
         <Tile label="Enrollments" value={enrollments.total.toLocaleString()} hint={`${enrollments.completed} completed (${enrollments.completionRate}%)`} icon={Users} />
         <Tile label="Avg progress" value={`${enrollments.avgProgress}%`} hint="Across all enrollments" icon={TrendingUp} />
-        <Tile label="Enrollment value" value={money(enrollments.enrollmentValue)} hint="List price × enrollments (no payments yet)" icon={Wallet} />
+        <Tile label="Revenue" value={money(enrollments.revenue)} hint={`${enrollments.paidOrders} paid order${enrollments.paidOrders === 1 ? '' : 's'}`} icon={Wallet} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -234,7 +235,7 @@ const OverviewTab: React.FC<{ onOpenApplications: () => void }> = ({ onOpenAppli
 
 // ---------- Courses ----------
 
-type SortKey = 'enrollments' | 'avgProgress' | 'enrollmentValue' | 'title';
+type SortKey = 'enrollments' | 'avgProgress' | 'revenue' | 'title';
 
 const CoursesTab: React.FC = () => {
   const [query, setQuery] = useState('');
@@ -277,7 +278,7 @@ const CoursesTab: React.FC = () => {
           >
             <option value="enrollments">Enrollments</option>
             <option value="avgProgress">Avg progress</option>
-            <option value="enrollmentValue">Enrollment value</option>
+            <option value="revenue">Revenue</option>
             <option value="title">Title</option>
           </select>
         </label>
@@ -293,7 +294,7 @@ const CoursesTab: React.FC = () => {
               <th className="px-4 py-3 font-bold text-right">Enrolled</th>
               <th className="px-4 py-3 font-bold">Avg progress</th>
               <th className="px-4 py-3 font-bold text-right">Completed</th>
-              <th className="px-4 py-3 font-bold text-right">Value</th>
+              <th className="px-4 py-3 font-bold text-right">Revenue</th>
               <th className="px-4 py-3 font-bold text-right">Rating</th>
               <th className="px-4 py-3 font-bold text-right">Quiz avg</th>
             </tr>
@@ -347,7 +348,7 @@ const CoursesTab: React.FC = () => {
                   </div>
                 </td>
                 <td className="px-4 py-3 text-right tabular-nums">{c.completed}</td>
-                <td className="px-4 py-3 text-right tabular-nums">{money(c.enrollmentValue)}</td>
+                <td className="px-4 py-3 text-right tabular-nums">{money(c.revenue)}</td>
                 <td className="px-4 py-3 text-right tabular-nums">
                   {c.avgRating === null ? <span className="text-gray-400">—</span> : `★ ${c.avgRating}`}
                   {c.reviews > 0 && <span className="block text-[11px] text-gray-400">{c.reviews} reviews</span>}
@@ -362,7 +363,8 @@ const CoursesTab: React.FC = () => {
         </table>
       </div>
       <p className="text-[11px] text-gray-400">
-        "Value" is list price × enrollments. There is no payment system yet, so it is not collected revenue.
+        "Revenue" is the total of paid orders. While payments run in test mode, it includes test and demo
+        payments, not real money.
       </p>
     </div>
   );
@@ -566,13 +568,116 @@ const ApplicationsTab: React.FC = () => {
   );
 };
 
+// ---------- Account ----------
+
+const AccountTab: React.FC = () => {
+  const { user } = useAuth();
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [message, setMessage] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
+
+  const change = useMutation({
+    mutationFn: async () =>
+      (await api.put('/api/auth/password', { currentPassword, newPassword })).data as { message: string },
+    onSuccess: (data) => {
+      setMessage({ type: 'ok', text: data.message });
+      setCurrentPassword('');
+      setNewPassword('');
+      setConfirmPassword('');
+    },
+    onError: (err) => setMessage({ type: 'err', text: errorMessage(err, 'Could not change password.') }),
+  });
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPassword !== confirmPassword) {
+      setMessage({ type: 'err', text: 'The new passwords do not match.' });
+      return;
+    }
+    setMessage(null);
+    change.mutate();
+  };
+
+  const input =
+    'w-full px-3 py-2.5 text-sm border border-gray-200 rounded-xl bg-white focus:outline-none focus:border-[#2D6A4F]';
+
+  return (
+    <div className="max-w-lg space-y-4">
+      <div className={`${card} p-6`}>
+        <h3 className="font-bold text-base text-[#1B1B1B]">Admin account</h3>
+        <p className="text-sm text-gray-600 mt-1">{user?.name}</p>
+        <p className="text-xs text-gray-500 break-all">{user?.email}</p>
+      </div>
+
+      <form onSubmit={submit} className={`${card} p-6 space-y-4`}>
+        <div>
+          <h3 className="font-bold text-base text-[#1B1B1B]">Change password</h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            At least 8 characters with upper and lower case letters and a number. All your other sessions are
+            signed out.
+          </p>
+        </div>
+        <label className="block text-xs font-bold text-gray-700">
+          Current password
+          <input
+            type="password"
+            required
+            autoComplete="current-password"
+            value={currentPassword}
+            onChange={(e) => setCurrentPassword(e.target.value)}
+            className={`${input} mt-1.5`}
+          />
+        </label>
+        <label className="block text-xs font-bold text-gray-700">
+          New password
+          <input
+            type="password"
+            required
+            minLength={8}
+            autoComplete="new-password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            className={`${input} mt-1.5`}
+          />
+        </label>
+        <label className="block text-xs font-bold text-gray-700">
+          Confirm new password
+          <input
+            type="password"
+            required
+            minLength={8}
+            autoComplete="new-password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            className={`${input} mt-1.5`}
+          />
+        </label>
+        {message && (
+          <p className={`text-xs font-semibold ${message.type === 'ok' ? 'text-[#2D6A4F]' : 'text-red-600'}`}>
+            {message.text}
+          </p>
+        )}
+        <button
+          type="submit"
+          disabled={change.isPending}
+          className="px-5 py-2.5 rounded-xl bg-[#2D6A4F] hover:bg-[#23533e] text-white text-sm font-bold disabled:opacity-60"
+        >
+          {change.isPending ? 'Saving...' : 'Update password'}
+        </button>
+      </form>
+    </div>
+  );
+};
+
 // ---------- Page ----------
 
 export const AdminDashboardPage: React.FC = () => {
   const { user, logout } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get('tab');
-  const tab: Tab = tabParam === 'courses' || tabParam === 'applications' ? tabParam : 'overview';
+  const tab: Tab =
+    tabParam === 'courses' || tabParam === 'applications' || tabParam === 'account' ? tabParam : 'overview';
   const setTab = (t: Tab) => setSearchParams(t === 'overview' ? {} : { tab: t }, { replace: true });
 
   // Shares the overview cache, so the pending badge costs no extra request.
@@ -586,6 +691,7 @@ export const AdminDashboardPage: React.FC = () => {
     { id: 'overview', label: 'Overview' },
     { id: 'courses', label: 'Courses' },
     { id: 'applications', label: 'Instructor applications' },
+    { id: 'account', label: 'Account' },
   ];
 
   return (
@@ -634,6 +740,7 @@ export const AdminDashboardPage: React.FC = () => {
         {tab === 'overview' && <OverviewTab onOpenApplications={() => setTab('applications')} />}
         {tab === 'courses' && <CoursesTab />}
         {tab === 'applications' && <ApplicationsTab />}
+        {tab === 'account' && <AccountTab />}
       </main>
     </div>
   );

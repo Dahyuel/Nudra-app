@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Search } from 'lucide-react';
 import api from '../../lib/api';
 import { useAuth } from '../../context/AuthContext';
+import { PageErrorBanner } from '../../components/PageErrorBanner';
 
 interface InstructorStudent {
   studentId: string;
@@ -28,7 +29,7 @@ export const InstructorStudentsPage: React.FC = () => {
   const { user } = useAuth();
   const [search, setSearch] = useState('');
 
-  const { data: students = [], isLoading } = useQuery({
+  const { data: students = [], isLoading, error } = useQuery({
     queryKey: ['instructor-students', user?.id],
     queryFn: async () => {
       const { data } = await api.get('/api/instructor/students');
@@ -49,6 +50,7 @@ export const InstructorStudentsPage: React.FC = () => {
 
   return (
     <div className="space-y-8 animate-in fade-in duration-200">
+      <PageErrorBanner errors={[error]} />
       <div>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-[#1B1B1B] tracking-tight">
           Students
@@ -92,7 +94,7 @@ export const InstructorStudentsPage: React.FC = () => {
                     <td className="py-4 px-3"><div className="h-4 w-24 bg-gray-200 rounded" /></td>
                   </tr>
                 ))}
-              {!isLoading && filtered.length === 0 && (
+              {!isLoading && !error && filtered.length === 0 && (
                 <tr>
                   <td colSpan={5} className="py-8 text-center text-gray-400 italic">
                     {students.length === 0 ? 'No students enrolled yet.' : 'No students match your search.'}

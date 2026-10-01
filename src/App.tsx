@@ -24,6 +24,9 @@ import { RegisterPage } from './pages/RegisterPage';
 import { InstructorApplyPage } from './pages/InstructorApplyPage';
 import { InstructorPendingPage } from './pages/InstructorPendingPage';
 import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
+import { ForgotPasswordPage } from './pages/ForgotPasswordPage';
+import { ResetPasswordPage } from './pages/ResetPasswordPage';
+import { CheckoutTestPage } from './pages/CheckoutTestPage';
 import { InstructorDashboardPage } from './pages/instructor/InstructorDashboardPage';
 import { InstructorCoursesPage } from './pages/instructor/InstructorCoursesPage';
 import { InstructorStudentsPage } from './pages/instructor/InstructorStudentsPage';
@@ -94,6 +97,17 @@ export default function App() {
           </PublicOnlyRoute>
         }
       />
+      {/* Password reset (the reset page works signed in or out: the link comes from email) */}
+      <Route
+        path="/forgot-password"
+        element={
+          <PublicOnlyRoute>
+            <ForgotPasswordPage />
+          </PublicOnlyRoute>
+        }
+      />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
+
       {/* Teachers apply here; accounts start pending until approved */}
       <Route
         path="/teach"
@@ -105,6 +119,7 @@ export default function App() {
       />
       <Route element={<ProtectedRoute />}>
         <Route path="/instructor/pending" element={<InstructorPendingPage />} />
+        <Route path="/checkout/test/:orderId" element={<CheckoutTestPage />} />
       </Route>
 
       {/* Admin console (accounts created with `npm run admin`) */}

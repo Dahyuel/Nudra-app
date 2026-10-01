@@ -11,6 +11,8 @@ export type User = {
   grade: string | null;
   /** Instructor approval state; null for students and legacy/seeded instructors. */
   instructorStatus: 'pending' | 'approved' | 'rejected' | null;
+  /** Saved from the Settings page. */
+  preferences?: { language: 'en' | 'ar'; notifyCommunity: boolean; notifySessions: boolean };
 };
 
 export type InstructorApplicationInput = {

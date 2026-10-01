@@ -2,18 +2,18 @@ import React, { useState, useRef } from 'react';
 import { User, Bell, Shield, Globe, Moon, Sun, Save, Check } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
-import { useRTL } from '../context/RTLContext';
 import api from '../lib/api';
 
 export const SettingsPage: React.FC = () => {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const [name, setName] = useState(user?.name ?? '');
   const [avatarUrl, setAvatarUrl] = useState(user?.avatarUrl ?? '');
   const [email] = useState(user?.email ?? '');
-  const [language, setLanguage] = useState<'en' | 'ar'>('en');
-  const [notifySessions, setNotifySessions] = useState(true);
-  const [notifyDiscussions, setNotifyDiscussions] = useState(true);
+  // Saved on the account (PUT /api/auth/preferences), so they follow the user across devices.
+  const [language, setLanguage] = useState<'en' | 'ar'>(user?.preferences?.language ?? 'en');
+  const [notifySessions, setNotifySessions] = useState(user?.preferences?.notifySessions ?? true);
+  const [notifyDiscussions, setNotifyDiscussions] = useState(user?.preferences?.notifyCommunity ?? true);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -47,6 +47,12 @@ export const SettingsPage: React.FC = () => {
     setIsSaving(true);
     try {
       await api.put('/api/auth/profile', { name: name.trim(), avatarUrl: avatarUrl || undefined });
+      await api.put('/api/auth/preferences', {
+        language,
+        notifyCommunity: notifyDiscussions,
+        notifySessions,
+      });
+      await refreshUser();
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
     } catch (err: any) {
@@ -205,6 +211,12 @@ export const SettingsPage: React.FC = () => {
                 <option value="en">English (Default)</option>
                 <option value="ar">العربية (Arabic)</option>
               </select>
+              {language === 'ar' && (
+                <p className="text-[11px] text-gray-500 mt-1.5 leading-relaxed">
+                  Your preference is saved. The Nudra interface is currently available in English only; it will
+                  switch automatically when the Arabic version is ready.
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
@@ -263,7 +275,8 @@ export const SettingsPage: React.FC = () => {
             <div>
               <p className="text-xs font-bold text-gray-900">Live Mentorship Reminders</p>
               <p className="text-[11px] text-gray-500">
-                Receive notifications 30 minutes before upcoming sessions begin
+                Receive notifications 30 minutes before upcoming sessions begin. Live sessions aren't available yet;
+                this applies once they launch.
               </p>
             </div>
             <input
@@ -278,7 +291,7 @@ export const SettingsPage: React.FC = () => {
             <div>
               <p className="text-xs font-bold text-gray-900">Community Discussion Alerts</p>
               <p className="text-[11px] text-gray-500">
-                Notify when a peer replies to your questions or marks answers helpful
+                Email and in-app notification when someone replies to your posts
               </p>
             </div>
             <input

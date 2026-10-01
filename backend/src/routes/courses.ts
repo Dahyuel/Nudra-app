@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { eq, and, ilike, sql, count, avg, inArray } from 'drizzle-orm';
+import { z } from 'zod';
 import { db } from '../db';
 import {
   courses,
@@ -11,8 +12,7 @@ import {
   lessonResources,
 } from '../db/schema';
 import { requireAuth, requireRole } from '../middleware/requireAuth';
-import { sendEnrollmentEmail } from '../lib/mailer';
-import { createNotification } from '../lib/notifications';
+import { enrollStudent } from '../lib/enrollment';
 
 const router = Router();
 
@@ -136,7 +136,7 @@ router.get('/:id', async (req: Request, res: Response) => {
       })
       .from(courses)
       .innerJoin(users, eq(courses.instructorId, users.id))
-      .where(and(eq(courses.id, id), eq(courses.isPublished, true)))
+      .where(eq(courses.id, id))
       .limit(1);
 
     if (rows.length === 0) {
@@ -147,6 +147,21 @@ router.get('/:id', async (req: Request, res: Response) => {
     const course = row.course;
 
     const isInstructor = currentUserId === course.instructorId;
+
+    // Unpublished (draft or taken down) courses stay visible to their instructor
+    // and to students already enrolled, so unpublishing never locks learners out.
+    if (!course.isPublished && !isInstructor) {
+      const enrolledRows = currentUserId
+        ? await db
+            .select({ id: enrollments.id })
+            .from(enrollments)
+            .where(and(eq(enrollments.studentId, currentUserId), eq(enrollments.courseId, course.id)))
+            .limit(1)
+        : [];
+      if (enrolledRows.length === 0) {
+        return res.status(404).json({ message: 'Course not found' });
+      }
+    }
     let isEnrolled = false;
     let enrollmentRow: typeof enrollments.$inferSelect | undefined;
     if (currentUserId) {
@@ -252,7 +267,12 @@ router.get('/:id', async (req: Request, res: Response) => {
           comment: r.review.comment,
           date: r.review.createdAt,
         })),
+        // Counts per star (1-5); the client turns them into percentages.
         ratingBreakdown,
+        my_review: (() => {
+          const mine = currentUserId ? reviewRows.find((r) => r.review.studentId === currentUserId) : undefined;
+          return mine ? { rating: mine.review.rating, comment: mine.review.comment } : null;
+        })(),
         is_enrolled: isEnrolled,
         progress: enrollmentRow?.progress ?? 0,
         last_lesson_id: enrollmentRow?.lastLessonId ?? null,
@@ -264,13 +284,56 @@ router.get('/:id', async (req: Request, res: Response) => {
   }
 });
 
+const reviewSchema = z.object({
+  rating: z.number().int().min(1).max(5),
+  comment: z.string().trim().max(1000).optional(),
+});
+
+// Create or update the current student's review (one per student per course).
+router.post('/:id/reviews', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const courseId = z.string().uuid().safeParse(req.params.id);
+    if (!courseId.success) return res.status(400).json({ message: 'Invalid course id' });
+    const parsed = reviewSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ message: 'Please choose a rating from 1 to 5 stars (comment up to 1000 characters).' });
+    }
+
+    const studentId = req.user!.id;
+    const enrollment = await db
+      .select({ id: enrollments.id })
+      .from(enrollments)
+      .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, courseId.data)))
+      .limit(1);
+    if (enrollment.length === 0) {
+      return res.status(403).json({ message: 'Only students enrolled in this course can review it.' });
+    }
+
+    const comment = parsed.data.comment || null;
+    const [review] = await db
+      .insert(courseReviews)
+      .values({ studentId, courseId: courseId.data, rating: parsed.data.rating, comment })
+      .onConflictDoUpdate({
+        target: [courseReviews.studentId, courseReviews.courseId],
+        set: { rating: parsed.data.rating, comment },
+      })
+      .returning();
+
+    return res.json({ review: { rating: review.rating, comment: review.comment } });
+  } catch (err) {
+    console.error('course review error', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 router.post('/:id/enroll', requireAuth, async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const studentId = req.user!.id;
 
     const courseRows = await db.select().from(courses).where(eq(courses.id, id)).limit(1);
-    if (courseRows.length === 0) {
+    // Drafts and unpublished courses can't take new enrollments.
+    if (courseRows.length === 0 || !courseRows[0].isPublished) {
       return res.status(404).json({ message: 'Course not found' });
     }
 
@@ -285,45 +348,14 @@ router.post('/:id/enroll', requireAuth, async (req: Request, res: Response) => {
       return res.status(409).json({ message: 'Already enrolled' });
     }
 
+    // Paid courses are only enrolled through a confirmed payment (POST /api/payments/checkout).
     if (Number(course.price) > 0) {
-      return res.status(402).json({ error: 'Payment required', message: 'Paid enrollment coming soon' });
+      return res.status(402).json({ error: 'Payment required', message: 'This course must be purchased first.' });
     }
 
-    const firstLesson = await db
-      .select()
-      .from(lessons)
-      .where(eq(lessons.courseId, id))
-      .orderBy(lessons.position)
-      .limit(1);
-
-    const inserted = await db
-      .insert(enrollments)
-      .values({
-        studentId,
-        courseId: id,
-        progress: 0,
-        lastLessonId: firstLesson[0]?.id ?? null,
-      })
-      .returning();
-
-    const studentRows = await db
-      .select({ name: users.name, email: users.email })
-      .from(users)
-      .where(eq(users.id, studentId))
-      .limit(1);
-
-    if (studentRows.length > 0) {
-      sendEnrollmentEmail(studentRows[0], { title: course.title }).catch(console.warn);
-    }
-    createNotification(
-      studentId,
-      'enrollment_confirmed',
-      'تم التسجيل بنجاح',
-      `تم تسجيلك في ${course.title}`,
-      `/course/${id}`
-    ).catch(console.warn);
-
-    return res.status(201).json({ enrollment: inserted[0] });
+    const { enrollment } = await enrollStudent(studentId, course);
+    if (!enrollment) return res.status(409).json({ message: 'Already enrolled' });
+    return res.status(201).json({ enrollment });
   } catch (err) {
     console.error('enroll error', err);
     return res.status(500).json({ message: 'Internal server error' });

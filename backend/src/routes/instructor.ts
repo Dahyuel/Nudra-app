@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import os from 'os';
 import fs from 'fs/promises';
-import { eq, and, count, avg, inArray, sql, desc } from 'drizzle-orm';
+import { eq, and, count, avg, sum, inArray, sql, desc } from 'drizzle-orm';
 import { db } from '../db';
 import {
   courses,
@@ -20,9 +20,17 @@ import {
   users,
   communityPosts,
   communityReplies,
+  orders,
 } from '../db/schema';
 import { requireAuth, requireRole } from '../middleware/requireAuth';
-import { minioClient, THUMBNAIL_BUCKET, RAW_VIDEO_BUCKET, getThumbnailUrl } from '../lib/minio';
+import {
+  minioClient,
+  THUMBNAIL_BUCKET,
+  RAW_VIDEO_BUCKET,
+  HLS_BUCKET,
+  getThumbnailUrl,
+  listRawVideoKeys,
+} from '../lib/minio';
 import { videoQueue } from '../lib/queue';
 import { chatCompletion } from '../lib/deepseek';
 
@@ -58,12 +66,16 @@ const courseBodySchema = z.object({
   thumbnail_url: urlSchema,
 });
 
+// `id` is sent for sections/lessons that already exist so they are updated in
+// place (keeping videos, quizzes, progress and notes); items without an id are new.
 const sectionSchema = z.object({
+  id: z.string().uuid().optional(),
   title: z.string().min(1).max(255),
   position: z.number().int().min(0).optional(),
   lessons: z
     .array(
       z.object({
+        id: z.string().uuid().optional(),
         title: z.string().min(1).max(255),
         duration_text: z.string().max(255).optional().nullable(),
         is_free: z.boolean().optional(),
@@ -116,8 +128,17 @@ router.get('/courses', async (req: Request, res: Response) => {
     const enrollmentMap = new Map<string, number>();
     const ratingMap = new Map<string, number>();
     const lessonMap = new Map<string, number>();
+    const revenueMap = new Map<string, number>();
 
     if (ids.length > 0) {
+      // Revenue = money actually paid (paid orders), not list price x students.
+      const paid = await db
+        .select({ courseId: orders.courseId, total: sum(orders.amount) })
+        .from(orders)
+        .where(and(inArray(orders.courseId, ids), eq(orders.status, 'paid')))
+        .groupBy(orders.courseId);
+      for (const p of paid) revenueMap.set(p.courseId, Number(p.total) || 0);
+
       const enr = await db
         .select({ courseId: enrollments.courseId, count: count(enrollments.id) })
         .from(enrollments)
@@ -159,7 +180,7 @@ router.get('/courses', async (req: Request, res: Response) => {
         updatedAt: c.updatedAt,
         enrollmentCount,
         rating: ratingMap.get(c.id) ?? 0,
-        revenue: enrollmentCount * price,
+        revenue: Math.round((revenueMap.get(c.id) ?? 0) * 100) / 100,
         lessonsCount: lessonMap.get(c.id) ?? 0,
       };
     });
@@ -167,6 +188,51 @@ router.get('/courses', async (req: Request, res: Response) => {
     return res.json({ courses: result });
   } catch (err) {
     console.error('instructor courses error', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Full course + curriculum for the edit form (owner only, published or not).
+router.get('/courses/:id', async (req: Request, res: Response) => {
+  try {
+    const instructorId = req.user!.id;
+    const id = z.string().uuid().safeParse(req.params.id);
+    if (!id.success) return res.status(400).json({ message: 'Invalid course id' });
+
+    const rows = await db.select().from(courses).where(eq(courses.id, id.data)).limit(1);
+    if (rows.length === 0) return res.status(404).json({ message: 'Course not found' });
+    if (rows[0].instructorId !== instructorId) return res.status(403).json({ message: 'Forbidden' });
+
+    const sectionRows = await db
+      .select()
+      .from(courseSections)
+      .where(eq(courseSections.courseId, id.data))
+      .orderBy(courseSections.position);
+    const lessonRows = await db
+      .select()
+      .from(lessons)
+      .where(eq(lessons.courseId, id.data))
+      .orderBy(lessons.position);
+
+    const curriculum = sectionRows.map((section) => ({
+      id: section.id,
+      title: section.title,
+      position: section.position,
+      lessons: lessonRows
+        .filter((l) => l.sectionId === section.id)
+        .map((l) => ({
+          id: l.id,
+          title: l.title,
+          durationText: l.durationText,
+          isFree: l.isFree,
+          position: l.position,
+          hasVideo: !!l.videoUrl,
+        })),
+    }));
+
+    return res.json({ course: { ...rows[0], curriculum } });
+  } catch (err) {
+    console.error('get instructor course error', err);
     return res.status(500).json({ message: 'Internal server error' });
   }
 });
@@ -278,32 +344,81 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
       await tx.update(courses).set(updateValues).where(eq(courses.id, id));
 
       if (Array.isArray(sections)) {
-        await tx.delete(courseSections).where(eq(courseSections.courseId, id));
+        // Sync the curriculum instead of deleting and re-inserting it: deleting a
+        // lesson cascades to its video, transcript, quizzes, attempts, progress and
+        // notes, so only lessons the instructor actually removed may be deleted.
+        const existingSections = await tx
+          .select({ id: courseSections.id })
+          .from(courseSections)
+          .where(eq(courseSections.courseId, id));
+        const existingLessons = await tx
+          .select({ id: lessons.id })
+          .from(lessons)
+          .where(eq(lessons.courseId, id));
+        // Only ids that belong to THIS course are honoured; anything else is
+        // treated as new, so a client can't edit another course's lessons.
+        const ownSectionIds = new Set(existingSections.map((s) => s.id));
+        const ownLessonIds = new Set(existingLessons.map((l) => l.id));
+        const keptSectionIds = new Set<string>();
+        const keptLessonIds = new Set<string>();
 
         for (let sIdx = 0; sIdx < sections.length; sIdx++) {
           const section = sections[sIdx];
-          const insertedSection = await tx
-            .insert(courseSections)
-            .values({
-              courseId: id,
-              title: section.title,
-              position: section.position ?? sIdx + 1,
-            })
-            .returning();
+          const position = section.position ?? sIdx + 1;
+          let sectionId: string;
 
-          const sec = insertedSection[0];
+          if (section.id && ownSectionIds.has(section.id)) {
+            sectionId = section.id;
+            await tx
+              .update(courseSections)
+              .set({ title: section.title, position })
+              .where(eq(courseSections.id, sectionId));
+          } else {
+            const [inserted] = await tx
+              .insert(courseSections)
+              .values({ courseId: id, title: section.title, position })
+              .returning({ id: courseSections.id });
+            sectionId = inserted.id;
+          }
+          keptSectionIds.add(sectionId);
+
           const sectionLessons = Array.isArray(section.lessons) ? section.lessons : [];
           for (let lIdx = 0; lIdx < sectionLessons.length; lIdx++) {
             const lesson = sectionLessons[lIdx];
-            await tx.insert(lessons).values({
-              sectionId: sec.id,
-              courseId: id,
+            const values = {
+              sectionId,
               title: lesson.title,
               durationText: lesson.duration_text ?? null,
               isFree: !!lesson.is_free,
               position: lesson.position ?? lIdx + 1,
-            });
+            };
+            if (lesson.id && ownLessonIds.has(lesson.id) && !keptLessonIds.has(lesson.id)) {
+              await tx.update(lessons).set(values).where(eq(lessons.id, lesson.id));
+              keptLessonIds.add(lesson.id);
+            } else {
+              const [inserted] = await tx
+                .insert(lessons)
+                .values({ ...values, courseId: id })
+                .returning({ id: lessons.id });
+              keptLessonIds.add(inserted.id);
+            }
           }
+        }
+
+        const removedLessonIds = existingLessons.map((l) => l.id).filter((lid) => !keptLessonIds.has(lid));
+        if (removedLessonIds.length > 0) {
+          // enrollments.last_lesson_id has no ON DELETE rule; clear it first or
+          // the delete fails for any student who resumed one of these lessons.
+          await tx
+            .update(enrollments)
+            .set({ lastLessonId: null })
+            .where(inArray(enrollments.lastLessonId, removedLessonIds));
+          await tx.delete(lessons).where(inArray(lessons.id, removedLessonIds));
+        }
+
+        const removedSectionIds = existingSections.map((s) => s.id).filter((sid) => !keptSectionIds.has(sid));
+        if (removedSectionIds.length > 0) {
+          await tx.delete(courseSections).where(inArray(courseSections.id, removedSectionIds));
         }
       }
     });
@@ -356,6 +471,90 @@ router.post('/courses/:id/publish', async (req: Request, res: Response) => {
     return res.json({ course: updated[0] });
   } catch (err) {
     console.error('publish course error', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+async function loadOwnedCourse(req: Request, res: Response) {
+  const id = z.string().uuid().safeParse(req.params.id);
+  if (!id.success) {
+    res.status(400).json({ message: 'Invalid course id' });
+    return null;
+  }
+  const rows = await db.select().from(courses).where(eq(courses.id, id.data)).limit(1);
+  if (rows.length === 0) {
+    res.status(404).json({ message: 'Course not found' });
+    return null;
+  }
+  if (rows[0].instructorId !== req.user!.id) {
+    res.status(403).json({ message: 'Forbidden' });
+    return null;
+  }
+  return rows[0];
+}
+
+// Hide from the catalog and stop new enrollments. Enrolled students keep access.
+router.post('/courses/:id/unpublish', async (req: Request, res: Response) => {
+  try {
+    const course = await loadOwnedCourse(req, res);
+    if (!course) return;
+    const [updated] = await db
+      .update(courses)
+      .set({ isPublished: false, updatedAt: new Date() })
+      .where(eq(courses.id, course.id))
+      .returning();
+    return res.json({ course: updated });
+  } catch (err) {
+    console.error('unpublish course error', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Permanently delete a course. Everything that references a course cascades
+// (enrollments, progress, certificates, posts...), so courses with students
+// can't be deleted; unpublish them instead.
+router.delete('/courses/:id', async (req: Request, res: Response) => {
+  try {
+    const course = await loadOwnedCourse(req, res);
+    if (!course) return;
+
+    const [{ value: studentCount }] = await db
+      .select({ value: count() })
+      .from(enrollments)
+      .where(eq(enrollments.courseId, course.id));
+    if (Number(studentCount) > 0) {
+      return res.status(409).json({
+        message: `${studentCount} student${Number(studentCount) === 1 ? ' is' : 's are'} enrolled in this course, so it can't be deleted. Unpublish it instead to hide it from the catalog.`,
+        studentCount: Number(studentCount),
+      });
+    }
+
+    const lessonIds = (
+      await db.select({ id: lessons.id }).from(lessons).where(eq(lessons.courseId, course.id))
+    ).map((l) => l.id);
+
+    await db.delete(courses).where(eq(courses.id, course.id));
+
+    // Storage isn't covered by the database cascade: remove each lesson's raw
+    // upload and HLS files. Failures are logged but don't undo the delete.
+    for (const lessonId of lessonIds) {
+      try {
+        for (const key of await listRawVideoKeys(lessonId)) await minioClient.removeObject(RAW_VIDEO_BUCKET, key);
+        const hlsKeys: string[] = [];
+        for await (const obj of minioClient.listObjectsV2(HLS_BUCKET, `lessons/${lessonId}/`, true) as AsyncIterable<{
+          name?: string;
+        }>) {
+          if (obj.name) hlsKeys.push(obj.name);
+        }
+        for (const key of hlsKeys) await minioClient.removeObject(HLS_BUCKET, key);
+      } catch (storageErr) {
+        console.warn(`failed to remove stored video files for lesson ${lessonId}`, storageErr);
+      }
+    }
+
+    return res.json({ message: 'Course deleted' });
+  } catch (err) {
+    console.error('delete course error', err);
     return res.status(500).json({ message: 'Internal server error' });
   }
 });
@@ -503,6 +702,46 @@ router.get('/lessons/:lessonId/video-status', async (req: Request, res: Response
     });
   } catch (err) {
     console.error('video status error', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Re-run only the transcript step (Whisper + embeddings) for an already
+// transcoded video whose transcript failed. Uses the kept raw upload.
+router.post('/lessons/:lessonId/retry-transcript', async (req: Request, res: Response) => {
+  try {
+    const instructorId = req.user!.id;
+    const lessonId = z.string().uuid().safeParse(req.params.lessonId);
+    if (!lessonId.success) return res.status(400).json({ message: 'Invalid lesson id' });
+
+    const lessonRows = await db
+      .select({ course: courses })
+      .from(lessons)
+      .innerJoin(courses, eq(lessons.courseId, courses.id))
+      .where(eq(lessons.id, lessonId.data))
+      .limit(1);
+    if (lessonRows.length === 0) return res.status(404).json({ message: 'Lesson not found' });
+    if (lessonRows[0].course.instructorId !== instructorId) return res.status(403).json({ message: 'Forbidden' });
+
+    const jobRows = await db.select().from(videoJobs).where(eq(videoJobs.lessonId, lessonId.data)).limit(1);
+    if (jobRows.length === 0 || jobRows[0].status !== 'transcript_failed') {
+      return res.status(409).json({ message: 'Only a failed transcript can be retried' });
+    }
+
+    const [rawKey] = await listRawVideoKeys(lessonId.data);
+    if (!rawKey) {
+      return res.status(409).json({ message: 'The original video file is no longer available. Please re-upload the video.' });
+    }
+
+    await db
+      .update(videoJobs)
+      .set({ status: 'transcribed', errorMsg: null, updatedAt: new Date() })
+      .where(eq(videoJobs.lessonId, lessonId.data));
+    await videoQueue.add('transcribe', { lessonId: lessonId.data, minioKey: rawKey, transcriptOnly: true });
+
+    return res.status(202).json({ status: 'transcribed', message: 'Transcript retry started' });
+  } catch (err) {
+    console.error('retry transcript error', err);
     return res.status(500).json({ message: 'Internal server error' });
   }
 });
@@ -816,14 +1055,24 @@ router.get('/earnings', async (req: Request, res: Response) => {
 
     const courseRows = await db.select().from(courses).where(eq(courses.instructorId, instructorId));
     const courseIds = courseRows.map((c) => c.id);
-    const priceMap = new Map(courseRows.map((c) => [c.id, Number(c.price) | 0]));
+    // Prices are numeric(10,2); keep the cents (`| 0` used to truncate 49.99 to 49).
+    const toMoney = (n: number) => Math.round(n * 100) / 100;
 
     let allEnrollments: { courseId: string; enrolledAt: Date }[] = [];
+    // Revenue counts only paid orders, at the amount actually charged and in the
+    // month it was paid (not list price x enrolled students).
+    let paidOrders: { courseId: string; amount: number; paidAt: Date }[] = [];
     if (courseIds.length > 0) {
       allEnrollments = await db
         .select({ courseId: enrollments.courseId, enrolledAt: enrollments.enrolledAt })
         .from(enrollments)
         .where(inArray(enrollments.courseId, courseIds));
+      paidOrders = (
+        await db
+          .select({ courseId: orders.courseId, amount: orders.amount, paidAt: orders.paidAt })
+          .from(orders)
+          .where(and(inArray(orders.courseId, courseIds), eq(orders.status, 'paid')))
+      ).map((o) => ({ courseId: o.courseId, amount: Number(o.amount) || 0, paidAt: o.paidAt ?? new Date(0) }));
     }
 
     const now = new Date();
@@ -837,24 +1086,25 @@ router.get('/earnings', async (req: Request, res: Response) => {
       const monthIdx = d.getMonth();
 
       let revenue = 0;
-      for (const e of allEnrollments) {
-        const ed = new Date(e.enrolledAt);
-        if (ed.getFullYear() === year && ed.getMonth() === monthIdx) {
-          revenue += priceMap.get(e.courseId) ?? 0;
+      for (const o of paidOrders) {
+        const pd = new Date(o.paidAt);
+        if (pd.getFullYear() === year && pd.getMonth() === monthIdx) {
+          revenue += o.amount;
         }
       }
 
-      if (i === 0) thisMonthRevenue = revenue;
-      monthly.push({ month: MONTHS[monthIdx], year, revenue });
+      if (i === 0) thisMonthRevenue = toMoney(revenue);
+      monthly.push({ month: MONTHS[monthIdx], year, revenue: toMoney(revenue) });
     }
 
     const courseEarnings = courseRows.map((c) => {
       const cnt = allEnrollments.filter((e) => e.courseId === c.id).length;
-      const price = Number(c.price) | 0;
-      return { courseId: c.id, title: c.title, students: cnt, price, revenue: cnt * price };
+      const price = Number(c.price) || 0;
+      const revenue = paidOrders.filter((o) => o.courseId === c.id).reduce((acc, o) => acc + o.amount, 0);
+      return { courseId: c.id, title: c.title, students: cnt, price, revenue: toMoney(revenue) };
     });
 
-    const totalRevenue = courseEarnings.reduce((acc, c) => acc + c.revenue, 0);
+    const totalRevenue = toMoney(courseEarnings.reduce((acc, c) => acc + c.revenue, 0));
 
     return res.json({
       monthly,
@@ -934,6 +1184,7 @@ router.get('/community-questions', async (req: Request, res: Response) => {
       .slice(0, 5)
       .map((p) => ({
         postId: p.id,
+        courseId: p.courseId,
         content: p.content,
         courseTitle: p.courseId ? courseTitleMap.get(p.courseId) ?? '' : '',
         createdAt: p.createdAt,

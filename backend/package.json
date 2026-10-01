@@ -9,6 +9,7 @@
     "db:seed": "tsx src/db/seed.ts",
     "instructors": "tsx src/scripts/instructors.ts",
     "admin": "tsx src/scripts/admin.ts",
+    "test:api": "tsx --env-file=.env --test --test-concurrency=1 tests/api.test.ts",
     "build": "tsc",
     "start": "node dist/index.js"
   },

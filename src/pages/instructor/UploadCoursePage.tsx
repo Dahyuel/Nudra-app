@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import {
   Check,
   ChevronRight,
@@ -23,6 +23,26 @@ interface UploadLesson {
   title: string;
   duration: string;
   videoFileName: string;
+  isFree?: boolean;
+}
+
+// Client-side placeholder ids ("sec-1", "l-1700000000") mark items not saved yet.
+const isSavedId = (id: string) => !id.startsWith('l-') && !id.startsWith('sec-');
+
+interface EditCourseResponse {
+  id: string;
+  title: string;
+  description: string;
+  category: string;
+  price: string | number;
+  originalPrice: string | number | null;
+  thumbnailUrl: string | null;
+  isPublished: boolean;
+  curriculum: {
+    id: string;
+    title: string;
+    lessons: { id: string; title: string; durationText: string | null; isFree: boolean; hasVideo: boolean }[];
+  }[];
 }
 
 interface UploadSection {
@@ -61,6 +81,13 @@ export const UploadCoursePage: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3 | 4>(1);
+
+  // Edit mode: /instructor/upload?edit=<courseId> (from "Edit" on My Courses)
+  const [searchParams] = useSearchParams();
+  const editId = searchParams.get('edit');
+  const [loadingCourse, setLoadingCourse] = useState(!!editId);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [alreadyPublished, setAlreadyPublished] = useState(false);
 
   // Step 1: Basic Info
   const [title, setTitle] = useState('');
@@ -111,6 +138,64 @@ export const UploadCoursePage: React.FC = () => {
   const [quizSaving, setQuizSaving] = useState(false);
   const [quizError, setQuizError] = useState<string | null>(null);
   const [quizSavedLessonId, setQuizSavedLessonId] = useState<string | null>(null);
+
+  // Load an existing course into the form when editing.
+  useEffect(() => {
+    if (!editId) return;
+    let active = true;
+    setLoadingCourse(true);
+    setLoadError(null);
+    api
+      .get(`/api/instructor/courses/${editId}`)
+      .then(({ data }) => {
+        if (!active) return;
+        const c = data.course as EditCourseResponse;
+        setCourseId(c.id);
+        setTitle(c.title);
+        setDescription(c.description);
+        setSubject(c.category);
+        setThumbnailUrl(c.thumbnailUrl);
+        setAlreadyPublished(c.isPublished);
+
+        // Stored as price = what students pay, originalPrice = struck-through full price.
+        const price = Number(c.price) || 0;
+        const original = c.originalPrice != null ? Number(c.originalPrice) : null;
+        setIsFree(price === 0);
+        if (original && original > price) {
+          setPriceEgp(original);
+          setDiscountPercent(Math.round((1 - price / original) * 100));
+        } else {
+          setPriceEgp(price || 450);
+          setDiscountPercent(0);
+        }
+
+        if (c.curriculum.length > 0) {
+          setSections(
+            c.curriculum.map((sec) => ({
+              id: sec.id,
+              title: sec.title,
+              lessons: sec.lessons.map((l) => ({
+                id: l.id,
+                title: l.title,
+                duration: l.durationText ?? '',
+                // Non-empty name makes the builder fetch this lesson's video status.
+                videoFileName: l.hasVideo ? 'Uploaded video' : '',
+                isFree: l.isFree,
+              })),
+            }))
+          );
+        }
+      })
+      .catch((err) => {
+        if (active) setLoadError(err?.response?.data?.message || 'Could not load this course for editing.');
+      })
+      .finally(() => {
+        if (active) setLoadingCourse(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [editId]);
 
   const handleThumbnailChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -304,6 +389,22 @@ export const UploadCoursePage: React.FC = () => {
     setQuizQuestions((prev) => prev.map((q, i) => (i === index ? { ...q, [field]: value } : q)));
   };
 
+  const retryTranscript = async (lessonId: string) => {
+    setVideoUploads((prev) => ({ ...prev, [lessonId]: { status: 'transcribed', uploading: false } }));
+    try {
+      await api.post(`/api/instructor/lessons/${lessonId}/retry-transcript`);
+    } catch (err: any) {
+      setVideoUploads((prev) => ({
+        ...prev,
+        [lessonId]: {
+          status: 'transcript_failed',
+          errorMsg: err?.response?.data?.message || 'Retry failed',
+          uploading: false,
+        },
+      }));
+    }
+  };
+
   const getVideoStatusLabel = (lessonId: string) => {
     const status = videoUploads[lessonId];
     if (!status) return null;
@@ -335,6 +436,22 @@ export const UploadCoursePage: React.FC = () => {
         );
       case 'done':
         return <span className="text-[11px] font-bold text-emerald-600">✓ Ready</span>;
+      case 'transcript_failed':
+        // The video plays; only the transcript (needed for AI summary/flashcards/quiz) failed.
+        return (
+          <span className="inline-flex items-center gap-2 text-[11px] font-bold">
+            <span className="text-amber-600" title={status.errorMsg || 'Transcript failed'}>
+              ⚠ Video ready, transcript failed
+            </span>
+            <button
+              type="button"
+              onClick={() => retryTranscript(lessonId)}
+              className="px-2 py-0.5 rounded-lg border border-amber-300 text-amber-700 hover:bg-amber-50"
+            >
+              Retry transcript
+            </button>
+          </span>
+        );
       case 'error':
         return (
           <span
@@ -357,6 +474,7 @@ export const UploadCoursePage: React.FC = () => {
           !s.uploading &&
           s.status !== 'done' &&
           s.status !== 'error' &&
+          s.status !== 'transcript_failed' &&
           s.status !== 'not_uploaded'
       )
       .map(([lessonId]) => lessonId);
@@ -394,24 +512,33 @@ export const UploadCoursePage: React.FC = () => {
     setIsSubmitting(true);
     try {
       if (currentStep === 1) {
-        const { data } = await api.post('/api/instructor/courses', {
+        const basicInfo = {
           title: title || 'Untitled Masterclass',
           description: description || 'Comprehensive curriculum with video lessons.',
           category: subject,
-          level: 'Beginner',
           thumbnail_url: thumbnailUrl,
-        });
-        setCourseId(data.course.id);
+        };
+        if (courseId) {
+          // Editing, or came Back to step 1: update instead of creating a duplicate course.
+          await api.put(`/api/instructor/courses/${courseId}`, basicInfo);
+        } else {
+          const { data } = await api.post('/api/instructor/courses', { ...basicInfo, level: 'Beginner' });
+          setCourseId(data.course.id);
+        }
       } else if (currentStep === 2 && courseId) {
         const oldSections = sections;
+        // Saved sections/lessons carry their id so the server updates them in place
+        // (keeping videos, quizzes and student progress) instead of re-creating them.
         const payloadSections = oldSections.map((s, sIdx) => ({
+          ...(isSavedId(s.id) ? { id: s.id } : {}),
           title: s.title,
           position: sIdx + 1,
           lessons: s.lessons.map((l, lIdx) => ({
+            ...(isSavedId(l.id) ? { id: l.id } : {}),
             title: l.title,
             duration_text: l.duration,
             position: lIdx + 1,
-            is_free: false,
+            is_free: !!l.isFree,
           })),
         }));
         const { data } = await api.put(`/api/instructor/courses/${courseId}`, { sections: payloadSections });
@@ -425,8 +552,9 @@ export const UploadCoursePage: React.FC = () => {
             return {
               id: les.id,
               title: oldLesson?.title || les.title,
-              duration: les.duration || oldLesson?.duration || '12:00',
+              duration: les.durationText || oldLesson?.duration || '12:00',
               videoFileName: oldLesson?.videoFileName || '',
+              isFree: les.isFree ?? oldLesson?.isFree ?? false,
             };
           }),
         }));
@@ -445,12 +573,12 @@ export const UploadCoursePage: React.FC = () => {
         }
         setPendingVideoFiles({});
       } else if (currentStep === 3 && courseId) {
+        // Students pay the discounted price; the full price is the struck-through
+        // "original" price (these used to be saved the other way round).
+        const hasDiscount = !isFree && discountPercent > 0;
         await api.put(`/api/instructor/courses/${courseId}`, {
-          price: isFree ? 0 : priceEgp,
-          original_price:
-            !isFree && discountPercent > 0
-              ? Math.round(priceEgp * (1 - discountPercent / 100))
-              : null,
+          price: isFree ? 0 : hasDiscount ? Math.round(priceEgp * (1 - discountPercent / 100)) : priceEgp,
+          original_price: hasDiscount ? priceEgp : null,
         });
       }
       setCurrentStep((prev) => (prev + 1) as any);
@@ -463,6 +591,11 @@ export const UploadCoursePage: React.FC = () => {
 
   const handlePublish = async () => {
     if (!courseId) return;
+    // Every step already saved its changes; a published course just goes back to the list.
+    if (alreadyPublished) {
+      navigate('/instructor/courses');
+      return;
+    }
     setError(null);
     setIsSubmitting(true);
     try {
@@ -562,12 +695,30 @@ export const UploadCoursePage: React.FC = () => {
       {/* Title */}
       <div>
         <h1 className="text-2xl sm:text-3xl font-extrabold text-[#1B1B1B] tracking-tight">
-          Upload & Publish Masterclass
+          {editId ? 'Edit Course' : 'Upload & Publish Masterclass'}
         </h1>
         <p className="text-sm text-[#6B7280] mt-1">
-          Complete the 4-step curriculum builder to publish your course to the Nudra catalog
+          {editId
+            ? 'Each step saves when you continue. Lessons keep their videos, quizzes and student progress.'
+            : 'Complete the 4-step curriculum builder to publish your course to the Nudra catalog'}
         </p>
       </div>
+
+      {loadingCourse && (
+        <div className="p-6 bg-white rounded-2xl border border-gray-100 shadow-sm flex items-center gap-3 text-sm text-gray-600">
+          <Loader2 className="w-4 h-4 animate-spin text-[#2D6A4F]" />
+          Loading course...
+        </div>
+      )}
+      {loadError && (
+        <div className="p-4 rounded-2xl border border-red-200 bg-red-50 text-sm font-semibold text-red-600 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span className="flex-1">{loadError}</span>
+          <Link to="/instructor/courses" className="text-xs font-bold underline">
+            Back to my courses
+          </Link>
+        </div>
+      )}
 
       {/* 4-Step Progress Indicator */}
       <div className="p-4 bg-white rounded-2xl border border-gray-100 shadow-sm">
@@ -584,8 +735,11 @@ export const UploadCoursePage: React.FC = () => {
             return (
               <div
                 key={s.step}
-                onClick={() => setCurrentStep(s.step as any)}
-                className="cursor-pointer group space-y-1.5"
+                // Jumping ahead before the course exists would skip saving it.
+                onClick={() => {
+                  if (courseId || s.step <= currentStep) setCurrentStep(s.step as any);
+                }}
+                className={`group space-y-1.5 ${courseId || s.step <= currentStep ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'}`}
               >
                 <div
                   className={`h-2 rounded-full transition-all duration-300 ${
@@ -670,7 +824,8 @@ export const UploadCoursePage: React.FC = () => {
                     onChange={(e) => setSubject(e.target.value)}
                     className="w-full px-4 py-2.5 text-xs sm:text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-[#2D6A4F] bg-white font-semibold"
                   >
-                    {subjectsList.map((sub) => (
+                    {/* Keep an edited course's existing category even if it isn't in the default list */}
+                    {(subjectsList.includes(subject) ? subjectsList : [subject, ...subjectsList]).map((sub) => (
                       <option key={sub} value={sub}>
                         {sub}
                       </option>
@@ -1164,7 +1319,7 @@ export const UploadCoursePage: React.FC = () => {
                 ) : (
                   <>
                     <Check className="w-4 h-4" />
-                    <span>Publish Course to Marketplace</span>
+                    <span>{alreadyPublished ? 'Save & finish' : 'Publish Course to Marketplace'}</span>
                   </>
                 )}
               </button>

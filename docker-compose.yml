@@ -76,7 +76,8 @@ services:
       MINIO_USE_SSL: "false"
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-nudra_minio}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-nudra_minio_secret}
-      WHISPER_API_KEY: ${SESSION_SECRET:-change-me}
+      # Must equal WHISPER_API_KEY in backend/.env (the backend sends it as X-API-Key).
+      WHISPER_API_KEY: ${WHISPER_API_KEY:?set WHISPER_API_KEY in .env to the same value as backend/.env}
 
 volumes:
   postgres_data:

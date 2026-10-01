@@ -92,3 +92,12 @@ export async function getPresignedVideoUrl(
   return await minioClient.presignedGetObject(bucket, objectName, expirySeconds);
 }
 
+/** Raw uploads live at lessons/raw/<lessonId>/<uuid>.<ext>; newest first. */
+export async function listRawVideoKeys(lessonId: string): Promise<string[]> {
+  const found: { name: string; lastModified: Date }[] = [];
+  const stream = minioClient.listObjectsV2(RAW_VIDEO_BUCKET, `lessons/raw/${lessonId}/`, true);
+  for await (const obj of stream as AsyncIterable<{ name?: string; lastModified?: Date }>) {
+    if (obj.name) found.push({ name: obj.name, lastModified: obj.lastModified ?? new Date(0) });
+  }
+  return found.sort((a, b) => b.lastModified.getTime() - a.lastModified.getTime()).map((o) => o.name);
+}

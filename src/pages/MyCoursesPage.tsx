@@ -2,10 +2,17 @@ import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { BookOpen, Play, CheckCircle2, Clock, Award, Star, ArrowUpRight } from 'lucide-react';
 import { useMyEnrollments } from '../hooks/useMyEnrollments';
+import { PageErrorBanner } from '../components/PageErrorBanner';
+
+const EMPTY_MESSAGES = {
+  all: "You haven't enrolled in any courses yet.",
+  'in-progress': 'No courses in progress. Everything you started is finished.',
+  completed: "You haven't completed a course yet. Keep going!",
+} as const;
 
 export const MyCoursesPage: React.FC = () => {
   const [filter, setFilter] = useState<'all' | 'in-progress' | 'completed'>('all');
-  const { enrollments, isLoading } = useMyEnrollments();
+  const { enrollments, isLoading, error } = useMyEnrollments();
 
   const enrolledCourses = enrollments.filter((c) => {
     if (filter === 'in-progress') return c.progress < 100;
@@ -15,6 +22,7 @@ export const MyCoursesPage: React.FC = () => {
 
   return (
     <div className="space-y-8 animate-in fade-in duration-200">
+      <PageErrorBanner errors={[error]} />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-extrabold text-[#1B1B1B] tracking-tight">
@@ -45,7 +53,19 @@ export const MyCoursesPage: React.FC = () => {
 
       {/* Courses List */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {enrolledCourses.map((course) => (
+        {isLoading &&
+          [0, 1].map((i) => (
+            <div key={i} className="h-64 rounded-2xl bg-white border border-gray-100 shadow-sm animate-pulse" />
+          ))}
+
+        {!isLoading && !error && enrolledCourses.length === 0 && (
+          <div className="rounded-2xl p-8 bg-white border border-gray-100 shadow-sm flex flex-col items-center justify-center text-center">
+            <BookOpen className="w-8 h-8 text-gray-300 mb-2" />
+            <p className="text-sm font-semibold text-gray-600">{EMPTY_MESSAGES[filter]}</p>
+          </div>
+        )}
+
+        {!isLoading && enrolledCourses.map((course) => (
           <div
             key={course.id}
             className="rounded-2xl p-6 bg-white border border-gray-100 shadow-sm flex flex-col justify-between hover:shadow-md transition-all group"

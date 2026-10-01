@@ -1,22 +1,17 @@
 import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Mail, Lock, ArrowRight } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export const LoginPage: React.FC = () => {
   const { login } = useAuth();
+  const [searchParams] = useSearchParams();
+  const justReset = searchParams.get('reset') === '1';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [forgotMessage, setForgotMessage] = useState(false);
-
-  const handleForgotPassword = (e: React.MouseEvent) => {
-    e.preventDefault();
-    setForgotMessage(true);
-    setTimeout(() => setForgotMessage(false), 3000);
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -51,6 +46,12 @@ export const LoginPage: React.FC = () => {
           </p>
         </div>
 
+        {justReset && (
+          <p className="text-xs font-semibold text-[#2D6A4F] bg-[#B7E4C7]/40 rounded-xl px-3 py-2 text-center">
+            Your password has been reset. Sign in with your new password.
+          </p>
+        )}
+
         {/* Email & Password Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
@@ -75,13 +76,9 @@ export const LoginPage: React.FC = () => {
               <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">
                 Password
               </label>
-              <a
-                href="#forgot-password"
-                onClick={handleForgotPassword}
-                className="text-[11px] font-bold text-[#2D6A4F] hover:underline"
-              >
+              <Link to="/forgot-password" className="text-[11px] font-bold text-[#2D6A4F] hover:underline">
                 Forgot password?
-              </a>
+              </Link>
             </div>
             <div className="relative">
               <Lock className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -94,10 +91,6 @@ export const LoginPage: React.FC = () => {
               />
             </div>
           </div>
-
-          {forgotMessage && (
-            <p className="text-[11px] italic text-gray-400">Password reset coming soon</p>
-          )}
 
           {/* Remember Me Checkbox */}
           <div className="flex items-center justify-between text-xs">

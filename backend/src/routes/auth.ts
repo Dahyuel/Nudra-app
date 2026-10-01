@@ -2,12 +2,12 @@ import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import multer from 'multer';
 import { z } from 'zod';
-import { randomUUID } from 'crypto';
-import { eq, and, gt } from 'drizzle-orm';
+import { randomUUID, randomBytes, createHash } from 'crypto';
+import { eq, and, gt, ne } from 'drizzle-orm';
 import { db } from '../db';
-import { users, sessions, instructorApplications } from '../db/schema';
+import { users, sessions, instructorApplications, passwordResetTokens } from '../db/schema';
 import { requireAuth } from '../middleware/requireAuth';
-import { sendWelcomeEmail } from '../lib/mailer';
+import { sendWelcomeEmail, sendPasswordResetEmail } from '../lib/mailer';
 import { createNotification } from '../lib/notifications';
 import { minioClient, THUMBNAIL_BUCKET, getThumbnailUrl } from '../lib/minio';
 
@@ -44,6 +44,11 @@ const publicUser = (user: typeof users.$inferSelect) => ({
   avatarUrl: user.avatarUrl,
   grade: user.grade,
   instructorStatus: user.instructorStatus,
+  preferences: {
+    language: user.preferredLanguage,
+    notifyCommunity: user.notifyCommunity,
+    notifySessions: user.notifySessions,
+  },
 });
 
 async function startSession(res: Response, userId: string) {
@@ -260,6 +265,83 @@ router.get('/instructor-application', requireAuth, async (req: Request, res: Res
   }
 });
 
+const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
+const hashResetToken = (token: string) => createHash('sha256').update(token).digest('hex');
+
+// Always answers the same way whether or not the email exists, so this can't be
+// used to discover which addresses have accounts.
+router.post('/forgot-password', async (req: Request, res: Response) => {
+  const genericReply = {
+    message: 'If an account exists for that email, a password reset link has been sent.',
+  };
+  try {
+    const email = typeof req.body?.email === 'string' ? sanitizeEmail(req.body.email) : '';
+    if (!email.includes('@') || email.length > 255) {
+      return res.status(400).json({ message: 'Please enter a valid email address' });
+    }
+
+    const rows = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    const user = rows[0];
+    if (user) {
+      const token = randomBytes(32).toString('base64url');
+      await db.transaction(async (tx) => {
+        // Only the newest link works.
+        await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, user.id));
+        await tx.insert(passwordResetTokens).values({
+          userId: user.id,
+          tokenHash: hashResetToken(token),
+          expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
+        });
+      });
+      // Not awaited: response time shouldn't reveal whether an email was sent.
+      sendPasswordResetEmail(user, token).catch(console.warn);
+    }
+
+    return res.json(genericReply);
+  } catch (err) {
+    console.error('forgot password error', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+router.post('/reset-password', async (req: Request, res: Response) => {
+  try {
+    const { token, password } = req.body ?? {};
+    if (typeof token !== 'string' || token.length < 20 || token.length > 200) {
+      return res.status(400).json({ message: 'This reset link is invalid or has expired.' });
+    }
+    if (!isValidPassword(password)) {
+      return res.status(400).json({
+        message:
+          'Password must be at least 8 characters and contain uppercase, lowercase, and numeric characters',
+      });
+    }
+
+    const rows = await db
+      .select()
+      .from(passwordResetTokens)
+      .where(and(eq(passwordResetTokens.tokenHash, hashResetToken(token)), gt(passwordResetTokens.expiresAt, new Date())))
+      .limit(1);
+    const resetToken = rows[0];
+    if (!resetToken) {
+      return res.status(400).json({ message: 'This reset link is invalid or has expired.' });
+    }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    await db.transaction(async (tx) => {
+      await tx.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, resetToken.userId));
+      // One-time link: remove it (and any others), and sign the account out everywhere.
+      await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, resetToken.userId));
+      await tx.delete(sessions).where(eq(sessions.userId, resetToken.userId));
+    });
+
+    return res.json({ message: 'Your password has been reset. You can now sign in.' });
+  } catch (err) {
+    console.error('reset password error', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 router.post('/login', async (req: Request, res: Response) => {
   try {
     const { email, password, role } = req.body ?? {};
@@ -334,15 +416,7 @@ router.get('/me', async (req: Request, res: Response) => {
     }
 
     const rows = await db
-      .select({
-        id: users.id,
-        name: users.name,
-        email: users.email,
-        role: users.role,
-        avatarUrl: users.avatarUrl,
-        grade: users.grade,
-        instructorStatus: users.instructorStatus,
-      })
+      .select({ user: users })
       .from(sessions)
       .innerJoin(users, eq(sessions.userId, users.id))
       .where(and(eq(sessions.id, sessionId), gt(sessions.expiresAt, new Date())))
@@ -353,9 +427,42 @@ router.get('/me', async (req: Request, res: Response) => {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
-    return res.json({ user: rows[0] });
+    // Same shape as login/register (publicUser never includes the password hash).
+    return res.json({ user: publicUser(rows[0].user) });
   } catch (err) {
     console.error('me error', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+const preferencesSchema = z
+  .object({
+    language: z.enum(['en', 'ar']).optional(),
+    notifyCommunity: z.boolean().optional(),
+    notifySessions: z.boolean().optional(),
+  })
+  .strict();
+
+router.put('/preferences', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const parsed = preferencesSchema.safeParse(req.body ?? {});
+    if (!parsed.success) return res.status(400).json({ message: 'Invalid preferences' });
+    const { language, notifyCommunity, notifySessions } = parsed.data;
+
+    const [updated] = await db
+      .update(users)
+      .set({
+        ...(language !== undefined ? { preferredLanguage: language } : {}),
+        ...(notifyCommunity !== undefined ? { notifyCommunity } : {}),
+        ...(notifySessions !== undefined ? { notifySessions } : {}),
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, req.user!.id))
+      .returning();
+
+    return res.json({ user: publicUser(updated) });
+  } catch (err) {
+    console.error('update preferences error', err);
     return res.status(500).json({ message: 'Internal server error' });
   }
 });
@@ -424,9 +531,16 @@ router.put('/password', requireAuth, async (req: Request, res: Response) => {
 
     const passwordHash = await bcrypt.hash(newPassword, 12);
 
-    await db.update(users).set({ passwordHash }).where(eq(users.id, user.id));
+    await db.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, user.id));
 
-    return res.json({ message: 'Password updated' });
+    // Sign out every other session: if the old password leaked, anyone who
+    // signed in with it loses access. The current session stays valid.
+    const currentSessionId = req.cookies?.session_id;
+    if (currentSessionId) {
+      await db.delete(sessions).where(and(eq(sessions.userId, user.id), ne(sessions.id, currentSessionId)));
+    }
+
+    return res.json({ message: 'Password updated. Other devices have been signed out.' });
   } catch (err) {
     console.error('password update error', err);
     return res.status(500).json({ message: 'Internal server error' });

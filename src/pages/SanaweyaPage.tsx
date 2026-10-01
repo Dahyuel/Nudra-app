@@ -20,18 +20,14 @@ import { useAuth } from '../context/AuthContext';
 import { StatCard } from '../components/StatCard';
 import { useSanaweyaProfile } from '../hooks/useSanaweyaProfile';
 import { useSanaweyaDashboard } from '../hooks/useSanaweyaDashboard';
+import { SUBJECT_LABELS, GRADE_LABELS } from '../lib/sanaweya';
+import { PageErrorBanner } from '../components/PageErrorBanner';
 
 const GRADE_OPTIONS = [
   { value: 'year1', label: 'First Year' },
   { value: 'year2', label: 'Second Year' },
   { value: 'year3', label: 'Third Year' },
 ];
-
-const GRADE_LABELS: Record<string, string> = {
-  year1: 'First Year Secondary',
-  year2: 'Second Year Secondary',
-  year3: 'Third Year Secondary',
-};
 
 const SUBJECT_ICONS: Record<string, React.ElementType> = {
   'الرياضيات': Calculator,
@@ -42,17 +38,6 @@ const SUBJECT_ICONS: Record<string, React.ElementType> = {
   'الأحياء': Leaf,
   'التاريخ': Scroll,
   'الجغرافيا': Globe2,
-};
-
-const SUBJECT_LABELS: Record<string, string> = {
-  'الرياضيات': 'Mathematics',
-  'اللغة العربية': 'Arabic Language',
-  'اللغة الإنجليزية': 'English Language',
-  'الفيزياء': 'Physics',
-  'الكيمياء': 'Chemistry',
-  'الأحياء': 'Biology',
-  'التاريخ': 'History',
-  'الجغرافيا': 'Geography',
 };
 
 interface SanaweyaProfile {
@@ -93,9 +78,9 @@ export const SanaweyaPage: React.FC = () => {
   const [isEditingGrade, setIsEditingGrade] = useState(false);
   const [gradeError, setGradeError] = useState<string | null>(null);
 
-  const { profile: profileData, isLoading: profileLoading } = useSanaweyaProfile();
+  const { profile: profileData, isLoading: profileLoading, error: profileError } = useSanaweyaProfile();
 
-  const { dashboard, isLoading: dashboardLoading } = useSanaweyaDashboard() as {
+  const { dashboard, isLoading: dashboardLoading, error: dashboardError } = useSanaweyaDashboard() as {
     dashboard: {
       profile: SanaweyaProfile | null;
       enrolledSanaweyaCourses: DashboardCourse[];
@@ -104,6 +89,7 @@ export const SanaweyaPage: React.FC = () => {
       upcomingExamCount: number;
     } | null;
     isLoading: boolean;
+    error: unknown;
   };
 
   const profile = dashboard?.profile ?? profileData ?? null;
@@ -135,6 +121,7 @@ export const SanaweyaPage: React.FC = () => {
 
   return (
     <div className="space-y-8 animate-in fade-in duration-200">
+      <PageErrorBanner errors={[profileError, dashboardError]} />
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-extrabold text-[#1B1B1B] tracking-tight flex items-center gap-3">
@@ -260,7 +247,7 @@ export const SanaweyaPage: React.FC = () => {
               <button
                 key={community.id}
                 onClick={() =>
-                  navigate(`/community?subject=${encodeURIComponent(community.subject)}&grade=${community.grade}`)
+                  navigate(`/community?community=${community.id}`)
                 }
                 className="rounded-2xl p-5 bg-[#F0FFF4] border border-[#B7E4C7] text-right hover:shadow-md transition-all"
               >

@@ -21,6 +21,7 @@ import {
   Video
 } from 'lucide-react';
 import { useCourse } from '../hooks/useCourse';
+import { CourseReviewForm } from '../components/CourseReviewForm';
 import { useAuth } from '../context/AuthContext';
 import api from '../lib/api';
 
@@ -250,7 +251,7 @@ export const CourseDetailPage: React.FC = () => {
               { id: 'overview', label: 'Overview' },
               { id: 'curriculum', label: `Curriculum (${course.curriculum?.reduce((acc, s) => acc + s.lessons.length, 0) || course.lessonsCount})` },
               { id: 'community', label: 'Community' },
-              { id: 'reviews', label: `Reviews (${course.rating})` },
+              { id: 'reviews', label: `Reviews (${course.ratingCount})` },
             ].map((tab) => (
               <button
                 key={tab.id}
@@ -510,7 +511,12 @@ export const CourseDetailPage: React.FC = () => {
                     </span>
                     <div className="flex items-center gap-1 my-2">
                       {[1, 2, 3, 4, 5].map((s) => (
-                        <Star key={s} className="w-4 h-4 fill-amber-400 text-amber-400" />
+                        <Star
+                          key={s}
+                          className={`w-4 h-4 ${
+                            s <= Math.round(course.rating) ? 'fill-amber-400 text-amber-400' : 'text-gray-300'
+                          }`}
+                        />
                       ))}
                     </div>
                     <p className="text-xs font-semibold text-gray-500">
@@ -521,7 +527,10 @@ export const CourseDetailPage: React.FC = () => {
                   {/* Right Rating Bar Chart (5 to 1 Stars) */}
                   <div className="sm:col-span-8 space-y-2">
                     {[5, 4, 3, 2, 1].map((stars) => {
-                      const pct = ratingBreakdown[stars] || 0;
+                      // The API sends counts per star; show each as a share of all reviews.
+                      const pct = course.ratingCount
+                        ? Math.round(((ratingBreakdown[stars] || 0) / course.ratingCount) * 100)
+                        : 0;
                       return (
                         <div key={stars} className="flex items-center gap-3 text-xs">
                           <span className="w-12 font-bold text-gray-700 flex items-center gap-1">
@@ -544,8 +553,15 @@ export const CourseDetailPage: React.FC = () => {
                 </div>
               </div>
 
-              {/* 3 Review Cards */}
+              {isEnrolled && <CourseReviewForm courseId={course.id} existing={course.my_review ?? null} />}
+
+              {/* Review Cards */}
               <div className="space-y-4">
+                {(course.reviews || []).length === 0 && (
+                  <p className="rounded-2xl p-8 bg-white border border-gray-100 text-center text-sm text-gray-500">
+                    No reviews yet.{isEnrolled ? ' Be the first to rate this course.' : ''}
+                  </p>
+                )}
                 {(course.reviews || []).map((review) => (
                   <div
                     key={review.id}
@@ -553,15 +569,29 @@ export const CourseDetailPage: React.FC = () => {
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        <img
-                          src={review.avatar ?? undefined}
-                          alt={review.author}
-                          referrerPolicy="no-referrer"
-                          className="w-10 h-10 rounded-full object-cover border border-gray-100"
-                        />
+                        {review.avatar ? (
+                          <img
+                            src={review.avatar}
+                            alt={review.author}
+                            referrerPolicy="no-referrer"
+                            className="w-10 h-10 rounded-full object-cover border border-gray-100"
+                          />
+                        ) : (
+                          <span className="w-10 h-10 rounded-full bg-[#2D6A4F] text-white flex items-center justify-center text-xs font-bold">
+                            {review.author
+                              .split(' ')
+                              .filter(Boolean)
+                              .slice(0, 2)
+                              .map((n) => n[0])
+                              .join('')
+                              .toUpperCase()}
+                          </span>
+                        )}
                         <div>
                           <h4 className="font-bold text-sm text-[#1B1B1B]">{review.author}</h4>
-                          <span className="text-[11px] text-gray-400">{review.date}</span>
+                          <span className="text-[11px] text-gray-400">
+                            {new Date(review.date).toLocaleDateString()}
+                          </span>
                         </div>
                       </div>
 
@@ -579,9 +609,9 @@ export const CourseDetailPage: React.FC = () => {
                       </div>
                     </div>
 
-                    <p className="text-xs sm:text-sm text-gray-700 leading-relaxed">
-                      "{review.comment}"
-                    </p>
+                    {review.comment && (
+                      <p className="text-xs sm:text-sm text-gray-700 leading-relaxed">"{review.comment}"</p>
+                    )}
 
                     <div className="flex items-center justify-between pt-2 border-t border-gray-50 text-[11px] text-gray-400">
                       <span>Verified Student</span>
@@ -623,11 +653,11 @@ export const CourseDetailPage: React.FC = () => {
                   ) : (
                     <div className="flex items-baseline gap-2">
                       <span className="text-3xl font-black text-[#1B1B1B]">
-                        ${course.price}
+                        {course.price} EGP
                       </span>
                       {course.originalPrice && (
                         <span className="text-sm text-gray-400 line-through">
-                          ${course.originalPrice}
+                          {course.originalPrice} EGP
                         </span>
                       )}
                     </div>
@@ -663,10 +693,25 @@ export const CourseDetailPage: React.FC = () => {
                 </button>
               ) : (
                 <button
-                  disabled
-                  className="w-full flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-gray-200 text-gray-500 text-sm font-bold cursor-not-allowed"
+                  onClick={async () => {
+                    if (!user) return navigate('/login');
+                    setEnrolling(true);
+                    setEnrollError(null);
+                    try {
+                      const { data } = await api.post('/api/payments/checkout', { courseId: course.id });
+                      if (/^https?:\/\//.test(data.redirectUrl)) window.location.href = data.redirectUrl;
+                      else navigate(data.redirectUrl);
+                    } catch (err: any) {
+                      setEnrollError(err?.response?.data?.message || 'Could not start checkout.');
+                    } finally {
+                      setEnrolling(false);
+                    }
+                  }}
+                  disabled={enrolling}
+                  className="w-full flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-[#2D6A4F] hover:bg-[#23533e] text-white text-sm font-bold shadow-md transition-all disabled:opacity-50"
                 >
-                  <span>Coming Soon — ${course.price}</span>
+                  <span>{enrolling ? 'Starting checkout...' : `Buy for ${course.price} EGP`}</span>
+                  <ArrowRight className="w-4 h-4" />
                 </button>
               )}
               {enrollError && (

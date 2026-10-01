@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { HelpCircle, Loader2, CheckCircle2, XCircle } from 'lucide-react';
 import { useLessonQuiz, GradedQuestion } from '../hooks/useLessonQuiz';
+import api from '../lib/api';
 
 interface LessonQuizPanelProps {
   lessonId: string | undefined;
@@ -19,12 +21,46 @@ const getOptionText = (question: GradedQuestion, letter: string) => {
 export const LessonQuizPanel: React.FC<LessonQuizPanelProps> = ({ lessonId }) => {
   const { quiz, lastAttempt, isLoading, submitAttempt, isSubmitting, result, resetQuiz } =
     useLessonQuiz(lessonId);
+  const queryClient = useQueryClient();
 
   const [selected, setSelected] = useState<Record<string, string>>({});
   // Without this, an existing lastAttempt keeps the summary screen showing forever,
   // so "Retake" / "Try Again" could never reach the questions again.
   const [retaking, setRetaking] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // Every past attempt (newest first), so students can see how they've improved.
+  const { data: attempts = [] } = useQuery({
+    queryKey: ['quiz-attempts', quiz?.id],
+    queryFn: async () =>
+      ((await api.get(`/api/quizzes/${quiz!.id}/attempts`)).data.attempts ?? []) as {
+        id: string;
+        score: number;
+        totalQuestions: number;
+        percentage: number;
+        completedAt: string;
+      }[],
+    enabled: !!quiz?.id,
+  });
+
+  const attemptHistory =
+    attempts.length > 1 ? (
+      <div className="rounded-xl border border-gray-100 p-4 space-y-2">
+        <h4 className="text-xs font-bold text-gray-700 uppercase tracking-wider">Your attempts</h4>
+        <ul className="space-y-1.5">
+          {attempts.map((a, i) => (
+            <li key={a.id} className="flex items-center justify-between text-xs">
+              <span className="text-gray-500">
+                {new Date(a.completedAt).toLocaleDateString()} {i === 0 && <span className="font-bold text-[#2D6A4F]">· latest</span>}
+              </span>
+              <span className="font-bold text-gray-800 tabular-nums">
+                {a.score}/{a.totalQuestions} · {a.percentage}%
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ) : null;
 
   const startRetake = () => {
     resetQuiz();
@@ -38,6 +74,7 @@ export const LessonQuizPanel: React.FC<LessonQuizPanelProps> = ({ lessonId }) =>
     try {
       await submitAttempt(selected);
       setRetaking(false);
+      queryClient.invalidateQueries({ queryKey: ['quiz-attempts', quiz?.id] });
     } catch (err: any) {
       setSubmitError(err?.response?.data?.message || 'Failed to submit quiz. Please try again.');
     }
@@ -134,6 +171,8 @@ export const LessonQuizPanel: React.FC<LessonQuizPanelProps> = ({ lessonId }) =>
           ))}
         </div>
 
+        {attemptHistory}
+
         <button
           onClick={startRetake}
           className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm font-bold text-gray-700 hover:bg-[#F8FAF9] transition-colors"
@@ -157,6 +196,7 @@ export const LessonQuizPanel: React.FC<LessonQuizPanelProps> = ({ lessonId }) =>
             {lastAttempt.score} / {lastAttempt.total} correct
           </div>
         </div>
+        {attemptHistory}
         <button
           onClick={startRetake}
           className="w-full px-4 py-2.5 rounded-xl bg-[#2D6A4F] text-white text-sm font-bold hover:bg-[#23533e] transition-colors"
