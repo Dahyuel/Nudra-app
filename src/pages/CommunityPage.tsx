@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useCommunityPosts } from '../hooks/useCommunityPosts';
+import { PostRepliesSection } from '../components/PostRepliesSection';
 import api from '../lib/api';
 
 export const CommunityPage: React.FC = () => {
@@ -43,6 +44,11 @@ export const CommunityPage: React.FC = () => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [expandedPostIds, setExpandedPostIds] = useState<Record<string, boolean>>({});
+  const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
+
+  const toggleReplies = (postId: string) =>
+    setExpandedPostIds((prev) => ({ ...prev, [postId]: !prev[postId] }));
 
   const showToast = (message: string) => {
     setToast(message);
@@ -261,7 +267,15 @@ export const CommunityPage: React.FC = () => {
                     <span>{post.voteCount} Helpful</span>
                   </button>
 
-                  <button className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold text-gray-500 hover:bg-[#F8FAF9] transition-colors">
+                  <button
+                    onClick={() => toggleReplies(post.id)}
+                    aria-expanded={!!expandedPostIds[post.id]}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${
+                      expandedPostIds[post.id]
+                        ? 'bg-emerald-50 text-[#2D6A4F]'
+                        : 'text-gray-500 hover:bg-[#F8FAF9]'
+                    }`}
+                  >
                     <MessageSquare className="w-3.5 h-3.5" />
                     <span>{post.replyCount} Replies</span>
                   </button>
@@ -275,6 +289,15 @@ export const CommunityPage: React.FC = () => {
                   <Share2 className="w-4 h-4" />
                 </button>
               </div>
+
+              {expandedPostIds[post.id] && (
+                <PostRepliesSection
+                  postId={post.id}
+                  draft={replyDrafts[post.id] ?? ''}
+                  onChangeDraft={(value) => setReplyDrafts((prev) => ({ ...prev, [post.id]: value }))}
+                  canReply={!!user}
+                />
+              )}
             </div>
           ))
         )}

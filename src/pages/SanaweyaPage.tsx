@@ -90,6 +90,8 @@ export const SanaweyaPage: React.FC = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [isSavingGrade, setIsSavingGrade] = useState(false);
+  const [isEditingGrade, setIsEditingGrade] = useState(false);
+  const [gradeError, setGradeError] = useState<string | null>(null);
 
   const { profile: profileData, isLoading: profileLoading } = useSanaweyaProfile();
 
@@ -116,10 +118,14 @@ export const SanaweyaPage: React.FC = () => {
 
   const handleSetGrade = async (grade: string) => {
     setIsSavingGrade(true);
+    setGradeError(null);
     try {
       await api.post('/api/sanaweya/profile', { grade });
       await queryClient.invalidateQueries({ queryKey: ['sanaweya-profile'] });
       await queryClient.invalidateQueries({ queryKey: ['sanaweya-dashboard'] });
+      setIsEditingGrade(false);
+    } catch (err: any) {
+      setGradeError(err?.response?.data?.message || 'Could not save your grade. Please try again.');
     } finally {
       setIsSavingGrade(false);
     }
@@ -143,9 +149,11 @@ export const SanaweyaPage: React.FC = () => {
 
       {isLoading ? (
         <div className="rounded-2xl p-6 bg-white border border-gray-100 shadow-sm animate-pulse h-24" />
-      ) : !profile ? (
+      ) : !profile || isEditingGrade ? (
         <div className="rounded-2xl p-6 sm:p-8 bg-gradient-to-br from-[#2D6A4F] to-[#52B788] text-white shadow-sm">
-          <h2 className="text-xl sm:text-2xl font-extrabold mb-2">Customize your learning experience</h2>
+          <h2 className="text-xl sm:text-2xl font-extrabold mb-2">
+            {profile ? 'Change your grade' : 'Customize your learning experience'}
+          </h2>
           <p className="text-sm text-white/90 mb-6">Choose your grade so we can show you the right content</p>
           <div className="flex flex-wrap gap-3">
             {GRADE_OPTIONS.map((opt) => (
@@ -153,12 +161,29 @@ export const SanaweyaPage: React.FC = () => {
                 key={opt.value}
                 disabled={isSavingGrade}
                 onClick={() => handleSetGrade(opt.value)}
-                className="px-5 py-2.5 rounded-xl bg-white text-[#2D6A4F] text-sm font-bold shadow-sm hover:bg-white/90 transition-colors disabled:opacity-60"
+                className={`px-5 py-2.5 rounded-xl text-sm font-bold shadow-sm transition-colors disabled:opacity-60 ${
+                  profile?.grade === opt.value
+                    ? 'bg-[#1B4332] text-white ring-2 ring-white'
+                    : 'bg-white text-[#2D6A4F] hover:bg-white/90'
+                }`}
               >
                 {opt.label}
               </button>
             ))}
+            {profile && (
+              <button
+                disabled={isSavingGrade}
+                onClick={() => {
+                  setIsEditingGrade(false);
+                  setGradeError(null);
+                }}
+                className="px-5 py-2.5 rounded-xl border border-white/70 text-white text-sm font-bold hover:bg-white/10 transition-colors disabled:opacity-60"
+              >
+                Cancel
+              </button>
+            )}
           </div>
+          {gradeError && <p className="mt-4 text-sm font-semibold text-white">{gradeError}</p>}
         </div>
       ) : (
         <div className="flex items-center gap-3">
@@ -167,9 +192,7 @@ export const SanaweyaPage: React.FC = () => {
             {GRADE_LABELS[profile.grade] ?? profile.grade}
           </span>
           <button
-            onClick={() => {
-              queryClient.setQueryData(['sanaweya-profile'], null);
-            }}
+            onClick={() => setIsEditingGrade(true)}
             className="inline-flex items-center gap-1 text-xs font-semibold text-gray-500 hover:text-[#2D6A4F] transition-colors"
           >
             <Pencil className="w-3.5 h-3.5" />
@@ -285,12 +308,24 @@ export const SanaweyaPage: React.FC = () => {
                 >
                   Open Exam
                 </button>
-                <button
-                  disabled={!item.exam.answerKeyUrl}
-                  className="px-3 py-2 rounded-xl bg-gray-100 text-gray-600 text-xs font-bold disabled:opacity-50"
-                >
-                  Answer Key
-                </button>
+                {item.exam.answerKeyUrl ? (
+                  <a
+                    href={item.exam.answerKeyUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-600 text-xs font-bold transition-colors"
+                  >
+                    Answer Key
+                  </a>
+                ) : (
+                  <button
+                    disabled
+                    title="No answer key for this exam yet"
+                    className="px-3 py-2 rounded-xl bg-gray-100 text-gray-600 text-xs font-bold disabled:opacity-50"
+                  >
+                    Answer Key
+                  </button>
+                )}
               </div>
             </div>
           ))}

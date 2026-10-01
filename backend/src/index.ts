@@ -168,7 +168,9 @@ const aiLimiter = rateLimit({
 });
 
 app.use('/api', speedLimiter);
-app.use('/api/auth', authLimiter);
+// Only credential endpoints get the strict limiter; /api/auth/me runs on every
+// page load and must not lock users out.
+app.use(['/api/auth/login', '/api/auth/register', '/api/auth/password'], authLimiter);
 app.use('/api/ai', aiLimiter);
 app.use('/api', limiter);
 
@@ -189,7 +191,6 @@ app.use('/api/videos', videosRouter);
 app.use('/api/community', createCommunityRouter(io));
 app.use('/api/stats', statsRouter);
 app.use('/api/quizzes', quizzesRouter);
-app.use('/api/exam', quizzesRouter);
 app.use('/api/sanaweya', sanaweyaRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/search', searchRouter);

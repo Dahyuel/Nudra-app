@@ -28,7 +28,7 @@ export const WeeklyChart: React.FC<WeeklyChartProps> = ({ data = [] }) => {
         </span>
       </div>
 
-      {data.length === 0 ? (
+      {totalHours === 0 ? (
         <div className="h-44 flex items-center justify-center text-xs text-gray-400 italic">
           No study activity recorded this week
         </div>

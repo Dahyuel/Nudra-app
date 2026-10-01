@@ -101,11 +101,15 @@ const ExamSimulatorPageInner: React.FC = () => {
     setIsStarting(true);
     setStartError(null);
     try {
-      const { data } = await api.post('/api/exam/generate', {
+      const { data } = await api.post('/api/quizzes/exam/generate', {
         courseId: selectedCourseId,
         questionCount,
         timeLimitMinutes,
       });
+      if (!data.questions?.length) {
+        setStartError('This course has no quiz questions yet, so an exam cannot be generated.');
+        return;
+      }
       setExamId(data.examId);
       setQuestions(data.questions);
       setCourseTitle(data.courseTitle);

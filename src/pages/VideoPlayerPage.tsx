@@ -36,6 +36,7 @@ import { useAiChat } from '../hooks/useAiChat';
 import { useFlashcards } from '../hooks/useFlashcards';
 import { useLessonSummary } from '../hooks/useLessonSummary';
 import { withErrorBoundary } from '../components/withErrorBoundary';
+import { LessonQuizPanel } from '../components/LessonQuizPanel';
 
 type PlayerLesson = {
   id: string;
@@ -959,6 +960,13 @@ const VideoPlayerPageInner: React.FC = () => {
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* TAB D: QUIZ (keyed by lesson so answers/retake state reset per lesson) */}
+            {bottomTab === 'quiz' && (
+              <div className="animate-in fade-in duration-150">
+                <LessonQuizPanel key={lessonId} lessonId={lessonId} courseId={id} />
               </div>
             )}
           </div>

@@ -21,6 +21,27 @@ export const LessonQuizPanel: React.FC<LessonQuizPanelProps> = ({ lessonId }) =>
     useLessonQuiz(lessonId);
 
   const [selected, setSelected] = useState<Record<string, string>>({});
+  // Without this, an existing lastAttempt keeps the summary screen showing forever,
+  // so "Retake" / "Try Again" could never reach the questions again.
+  const [retaking, setRetaking] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const startRetake = () => {
+    resetQuiz();
+    setSelected({});
+    setSubmitError(null);
+    setRetaking(true);
+  };
+
+  const handleSubmit = async () => {
+    setSubmitError(null);
+    try {
+      await submitAttempt(selected);
+      setRetaking(false);
+    } catch (err: any) {
+      setSubmitError(err?.response?.data?.message || 'Failed to submit quiz. Please try again.');
+    }
+  };
 
   if (isLoading) {
     return (
@@ -114,7 +135,7 @@ export const LessonQuizPanel: React.FC<LessonQuizPanelProps> = ({ lessonId }) =>
         </div>
 
         <button
-          onClick={resetQuiz}
+          onClick={startRetake}
           className="w-full px-4 py-2.5 rounded-xl border border-gray-200 text-sm font-bold text-gray-700 hover:bg-[#F8FAF9] transition-colors"
         >
           Try Again
@@ -123,7 +144,7 @@ export const LessonQuizPanel: React.FC<LessonQuizPanelProps> = ({ lessonId }) =>
     );
   }
 
-  if (lastAttempt) {
+  if (lastAttempt && !retaking) {
     const percentage = lastAttempt.percentage;
     const scoreColor =
       percentage >= 70 ? 'text-[#2D6A4F]' : percentage >= 50 ? 'text-amber-500' : 'text-red-500';
@@ -137,7 +158,7 @@ export const LessonQuizPanel: React.FC<LessonQuizPanelProps> = ({ lessonId }) =>
           </div>
         </div>
         <button
-          onClick={resetQuiz}
+          onClick={startRetake}
           className="w-full px-4 py-2.5 rounded-xl bg-[#2D6A4F] text-white text-sm font-bold hover:bg-[#23533e] transition-colors"
         >
           Retake Quiz
@@ -197,8 +218,10 @@ export const LessonQuizPanel: React.FC<LessonQuizPanelProps> = ({ lessonId }) =>
         ))}
       </div>
 
+      {submitError && <p className="text-xs text-red-500 font-semibold">{submitError}</p>}
+
       <button
-        onClick={() => submitAttempt(selected)}
+        onClick={handleSubmit}
         disabled={!allAnswered || isSubmitting}
         className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-xl bg-[#2D6A4F] text-white text-sm font-bold hover:bg-[#23533e] transition-colors disabled:opacity-50 disabled:pointer-events-none"
       >

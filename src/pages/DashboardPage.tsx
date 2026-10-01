@@ -38,15 +38,17 @@ export const DashboardPage: React.FC = () => {
   const recentCourses = enrollments.slice(0, 4);
   const continueCourse = inProgress[0];
 
-  const hoursLearned = Math.round(
-    stats?.totalHoursThisWeek ?? (stats?.weeklyHours ?? []).reduce((sum, h) => sum + h.hours, 0)
-  );
+  const hoursLearned =
+    Math.round(
+      (stats?.totalHoursThisWeek ?? (stats?.weeklyHours ?? []).reduce((sum, h) => sum + h.hours, 0)) * 10
+    ) / 10;
 
-  const todayIndex = (new Date().getDay() + 6) % 7;
-  const weeklyChartData = (stats?.weeklyHours ?? []).map((item, index) => ({
+  // The API returns the last 7 days ending today, so today is the last entry.
+  const weeklyHours = stats?.weeklyHours ?? [];
+  const weeklyChartData = weeklyHours.map((item, index) => ({
     day: item.day,
     hours: item.hours,
-    active: index === todayIndex,
+    active: index === weeklyHours.length - 1,
   }));
 
   const avgProgress =
@@ -144,8 +146,8 @@ export const DashboardPage: React.FC = () => {
             />
             <StatCard
               title="Hours Learned"
-              value={0}
-              subtitle="Based on completed lessons"
+              value={hoursLearned}
+              subtitle="This week"
               isPrimary={false}
               icon={Clock}
             />
@@ -164,7 +166,7 @@ export const DashboardPage: React.FC = () => {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left: Weekly Study Analytics Chart */}
         <div className="lg:col-span-6">
-          <WeeklyChart />
+          <WeeklyChart data={weeklyChartData} />
         </div>
 
         {/* Center: Upcoming Live Sessions Card (Modeled directly after Donezo's "Reminders / Meeting With Mr.Thomson" card) */}

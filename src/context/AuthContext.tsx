@@ -35,15 +35,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     let active = true;
 
+    // Only a 401 means "not logged in". Rate limits, network errors and 5xx are
+    // transient, so retry with backoff instead of logging the user out.
     const restoreSession = async () => {
-      try {
-        const { data } = await api.get('/api/auth/me');
-        if (active) setUser(data.user);
-      } catch {
-        if (active) setUser(null);
-      } finally {
-        if (active) setIsLoading(false);
+      const delays = [1000, 2000, 4000];
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const { data } = await api.get('/api/auth/me');
+          if (active) setUser(data.user);
+          break;
+        } catch (err: any) {
+          const status = err?.response?.status;
+          if (status === 401 || attempt >= delays.length) {
+            if (active) setUser(null);
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
+          if (!active) return;
+        }
       }
+      if (active) setIsLoading(false);
     };
 
     restoreSession();
