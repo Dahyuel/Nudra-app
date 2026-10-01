@@ -6,7 +6,7 @@ export type User = {
   id: string;
   name: string;
   email: string;
-  role: 'student' | 'instructor';
+  role: 'student' | 'instructor' | 'admin';
   avatarUrl: string | null;
   grade: string | null;
   /** Instructor approval state; null for students and legacy/seeded instructors. */
@@ -27,7 +27,17 @@ export const isApprovedInstructor = (user: User) =>
   user.role === 'instructor' && (user.instructorStatus === null || user.instructorStatus === 'approved');
 
 /** Where a signed-in user belongs by default. */
+/** Turn an auth request error into a message that says what actually went wrong. */
+const authErrorMessage = (err: any, fallback: string) => {
+  // No HTTP response at all: backend down, wrong port, or CORS blocked the request.
+  if (!err?.response) {
+    return "Can't reach the Nudra server. Make sure the backend is running, then try again.";
+  }
+  return err.response.data?.message || `${fallback} (error ${err.response.status})`;
+};
+
 export const homePathFor = (user: User) => {
+  if (user.role === 'admin') return '/admin';
   if (user.role !== 'instructor') return '/dashboard';
   return isApprovedInstructor(user) ? '/instructor/dashboard' : '/instructor/pending';
 };
@@ -89,7 +99,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setUser(data.user);
         navigate(homePathFor(data.user));
       } catch (err: any) {
-        throw new Error(err?.response?.data?.message || 'Login failed');
+        throw new Error(authErrorMessage(err, 'Login failed'));
       }
     },
     [navigate]
@@ -103,7 +113,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setUser(data.user);
         navigate(homePathFor(data.user));
       } catch (err: any) {
-        throw new Error(err?.response?.data?.message || 'Registration failed');
+        throw new Error(authErrorMessage(err, 'Registration failed'));
       }
     },
     [navigate]
@@ -121,7 +131,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         throw new Error(
           firstFieldError
             ? `${firstFieldError[0]}: ${firstFieldError[1][0]}`
-            : err?.response?.data?.message || 'Application failed'
+            : authErrorMessage(err, 'Application failed')
         );
       }
     },

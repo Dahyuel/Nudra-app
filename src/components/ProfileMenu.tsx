@@ -118,7 +118,7 @@ export const ProfileMenu: React.FC<ProfileMenuProps> = ({ align = 'left', showNa
             className="w-full flex items-center gap-2 text-right px-3 py-2 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-[#F8FAF9] dark:hover:bg-gray-800 rounded-xl transition-colors"
           >
             <Settings className="w-3.5 h-3.5" />
-            <span>الإعدادات</span>
+            <span>Settings</span>
           </button>
 
           <button
@@ -127,7 +127,7 @@ export const ProfileMenu: React.FC<ProfileMenuProps> = ({ align = 'left', showNa
           >
             <span className="flex items-center gap-2">
               {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-              <span>{theme === 'dark' ? 'Light Mode' : 'Dark Mode'}</span>
+              <span>Dark mode</span>
             </span>
             <span
               className={`w-9 h-5 rounded-full transition-colors relative ${

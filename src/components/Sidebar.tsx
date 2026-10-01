@@ -18,6 +18,7 @@ import { useQuery } from '@tanstack/react-query';
 import api from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { ProfileMenu } from './ProfileMenu';
+import { AccountActions } from './AccountActions';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -200,6 +201,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
         {/* Bottom Section: User Profile Menu (dropdown) & Instructor Studio */}
         <div className="space-y-2 pt-4 border-t border-gray-100">
           <ProfileMenu showName align="left" openUp />
+          <AccountActions onAction={onClose} />
 
           {user?.role === 'instructor' && (
             <Link

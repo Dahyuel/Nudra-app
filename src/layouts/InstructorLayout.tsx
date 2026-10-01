@@ -18,6 +18,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { ProfileMenu } from '../components/ProfileMenu';
+import { AccountActions } from '../components/AccountActions';
 
 const getInitials = (name?: string) => {
   if (!name) return '?';
@@ -94,8 +95,9 @@ export const InstructorLayout: React.FC = () => {
             <ExternalLink className="w-3.5 h-3.5 opacity-70" />
           </Link>
 
-          {/* Instructor Profile menu */}
-          <ProfileMenu showName align="right" />
+          {/* Instructor Profile menu (opens upward: it sits at the bottom of the sidebar) */}
+          <ProfileMenu showName align="left" openUp />
+          <AccountActions />
         </div>
       </aside>
 
@@ -186,14 +188,17 @@ export const InstructorLayout: React.FC = () => {
               </nav>
             </div>
 
-            <Link
-              to="/student-portal"
-              onClick={() => setMobileMenuOpen(false)}
-              className="p-3 rounded-xl bg-emerald-50 text-[#2D6A4F] text-xs font-bold flex items-center justify-between"
-            >
-              <span>Back to Student Portal</span>
-              <ExternalLink className="w-3.5 h-3.5" />
-            </Link>
+            <div className="space-y-3">
+              <Link
+                to="/student-portal"
+                onClick={() => setMobileMenuOpen(false)}
+                className="p-3 rounded-xl bg-emerald-50 text-[#2D6A4F] text-xs font-bold flex items-center justify-between"
+              >
+                <span>Back to Student Portal</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </Link>
+              <AccountActions onAction={() => setMobileMenuOpen(false)} />
+            </div>
           </div>
         </div>
       )}

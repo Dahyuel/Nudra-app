@@ -1,4 +1,5 @@
-// Review instructor applications until an admin UI exists.
+// Review instructor applications from the terminal (the admin dashboard at
+// /admin does the same thing in the browser).
 //
 //   npm run instructors -- list [pending|approved|rejected|all]   (default: pending)
 //   npm run instructors -- show <email>
@@ -6,14 +7,10 @@
 //   npm run instructors -- reject <email> [note...]
 import { eq, desc } from 'drizzle-orm';
 import { db } from '../db';
-import { users, instructorApplications, notifications } from '../db/schema';
-import { sendEmail } from '../lib/mailer';
+import { users, instructorApplications } from '../db/schema';
+import { reviewInstructorApplication } from '../lib/instructorReview';
 
 type Status = 'pending' | 'approved' | 'rejected';
-
-// Applicant names are user-controlled, so escape them before putting them in email HTML.
-const escapeHtml = (value: string) =>
-  value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
 const usage = () => {
   console.log(
@@ -95,43 +92,14 @@ async function review(email: string, decision: 'approved' | 'rejected', note: st
     process.exitCode = 1;
     return;
   }
-  const { user } = found;
-
-  await db.transaction(async (tx) => {
-    await tx
-      .update(users)
-      .set({ instructorStatus: decision, updatedAt: new Date() })
-      .where(eq(users.id, user.id));
-    await tx
-      .update(instructorApplications)
-      .set({ status: decision, reviewNote: note, reviewedAt: new Date(), updatedAt: new Date() })
-      .where(eq(instructorApplications.userId, user.id));
-    // Inserted directly: Socket.IO only exists inside the API server, so the
-    // user sees this on their next page load rather than in real time.
-    await tx.insert(notifications).values({
-      userId: user.id,
-      type: 'instructor_application',
-      title: decision === 'approved' ? 'You are now a Nudra instructor' : 'Instructor application update',
-      body:
-        decision === 'approved'
-          ? 'Your application was approved. You can now create and publish courses.'
-          : `Your application was not approved.${note ? ` Note: ${note}` : ''}`,
-      link: decision === 'approved' ? '/instructor/dashboard' : '/instructor/pending',
-    });
-  });
-
-  await sendEmail({
-    to: user.email,
-    subject: decision === 'approved' ? 'Your Nudra instructor application was approved' : 'Your Nudra instructor application',
-    html:
-      decision === 'approved'
-        ? `<p>Hi ${escapeHtml(user.name)},</p><p>Your application to teach on Nudra was approved. You can now sign in and open the Instructor Studio.</p>`
-        : `<p>Hi ${escapeHtml(user.name)},</p><p>Unfortunately your application to teach on Nudra was not approved.</p>${
-            note ? `<p>Note from the reviewer: ${escapeHtml(note)}</p>` : ''
-          }`,
-  }).catch((err) => console.warn('email failed (status was still updated):', err?.message ?? err));
-
-  console.log(`${user.email} -> ${decision}`);
+  // The CLI is a deliberate admin action, so it may re-review decided applications.
+  const result = await reviewInstructorApplication(found.user.id, decision, note, { force: true });
+  if (!result.ok) {
+    console.error(result.message);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`${result.email} -> ${result.decision}`);
 }
 
 async function main() {

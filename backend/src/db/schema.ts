@@ -16,7 +16,8 @@ import {
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
 
-export const roleEnum = pgEnum('role', ['student', 'instructor']);
+// 'admin' accounts are created with `npm run admin` (never via public sign-up).
+export const roleEnum = pgEnum('role', ['student', 'instructor', 'admin']);
 
 const vector768 = customType<{ data: number[] }>({
   dataType() {

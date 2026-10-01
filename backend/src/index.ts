@@ -5,7 +5,7 @@ import { Server } from 'socket.io';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import slowDown from 'express-slow-down';
 import authRouter from './routes/auth';
 import coursesRouter, { myCoursesHandler } from './routes/courses';
@@ -26,6 +26,7 @@ import { requireAuth, requireRole } from './middleware/requireAuth';
 import { setIO } from './lib/socket';
 import notificationsRouter from './routes/notifications';
 import searchRouter from './routes/search';
+import adminRouter from './routes/admin';
 import './workers/transcodeWorker';
 
 const app = express();
@@ -153,6 +154,22 @@ const authLimiter = rateLimit({
   message: { message: 'Too many attempts, please try again later' },
 });
 
+// Login brute-force protection: only FAILED attempts count, and they are counted
+// per IP + email. Successful sign-ins (e.g. switching accounts) never use up the
+// limit, and a typo on one account can't lock out everyone on a shared network.
+const loginLimiter = rateLimit({
+  windowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000),
+  max: Number(process.env.AUTH_RATE_LIMIT_MAX || 50),
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+  keyGenerator: (req) => {
+    const email = typeof req.body?.email === 'string' ? req.body.email.toLowerCase().trim() : '';
+    return `${ipKeyGenerator(req.ip ?? '')}|${email}`;
+  },
+  message: { message: 'Too many failed sign-in attempts. Please wait a few minutes and try again.' },
+});
+
 const speedLimiter = slowDown({
   windowMs: Number(process.env.SLOW_DOWN_WINDOW_MS || 15 * 60 * 1000),
   delayAfter: Number(process.env.SLOW_DOWN_AFTER || 100),
@@ -170,10 +187,8 @@ const aiLimiter = rateLimit({
 app.use('/api', speedLimiter);
 // Only credential endpoints get the strict limiter; /api/auth/me runs on every
 // page load and must not lock users out.
-app.use(
-  ['/api/auth/login', '/api/auth/register', '/api/auth/register-instructor', '/api/auth/password'],
-  authLimiter
-);
+app.use('/api/auth/login', loginLimiter);
+app.use(['/api/auth/register', '/api/auth/register-instructor', '/api/auth/password'], authLimiter);
 app.use('/api/ai', aiLimiter);
 app.use('/api', limiter);
 
@@ -197,6 +212,7 @@ app.use('/api/quizzes', quizzesRouter);
 app.use('/api/sanaweya', sanaweyaRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/search', searchRouter);
+app.use('/api/admin', adminRouter);
 
 const PORT = Number(process.env.PORT) || 3001;
 

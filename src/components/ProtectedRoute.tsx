@@ -3,7 +3,7 @@ import { Navigate, Outlet } from 'react-router-dom';
 import { useAuth, homePathFor, isApprovedInstructor } from '../context/AuthContext';
 
 interface ProtectedRouteProps {
-  requiredRole?: 'student' | 'instructor';
+  requiredRole?: 'student' | 'instructor' | 'admin';
 }
 
 export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ requiredRole }) => {

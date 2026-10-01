@@ -54,7 +54,8 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
 export const isApprovedInstructor = (user: { role: string; instructorStatus: string | null }) =>
   user.role === 'instructor' && (user.instructorStatus === null || user.instructorStatus === 'approved');
 
-export const requireRole = (role: 'student' | 'instructor') => {
+// Instructors may also use student routes (student portal); admins must match exactly.
+export const requireRole = (role: 'student' | 'instructor' | 'admin') => {
   return (req: Request, res: Response, next: NextFunction) => {
     if (!req.user) {
       return res.status(403).json({ message: 'Forbidden' });

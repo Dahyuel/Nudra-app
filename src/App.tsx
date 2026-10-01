@@ -23,6 +23,7 @@ import { LoginPage } from './pages/LoginPage';
 import { RegisterPage } from './pages/RegisterPage';
 import { InstructorApplyPage } from './pages/InstructorApplyPage';
 import { InstructorPendingPage } from './pages/InstructorPendingPage';
+import { AdminDashboardPage } from './pages/admin/AdminDashboardPage';
 import { InstructorDashboardPage } from './pages/instructor/InstructorDashboardPage';
 import { InstructorCoursesPage } from './pages/instructor/InstructorCoursesPage';
 import { InstructorStudentsPage } from './pages/instructor/InstructorStudentsPage';
@@ -104,6 +105,11 @@ export default function App() {
       />
       <Route element={<ProtectedRoute />}>
         <Route path="/instructor/pending" element={<InstructorPendingPage />} />
+      </Route>
+
+      {/* Admin console (accounts created with `npm run admin`) */}
+      <Route element={<ProtectedRoute requiredRole="admin" />}>
+        <Route path="/admin" element={<AdminDashboardPage />} />
       </Route>
 
       {/* Public pages that render inside the dashboard shell when logged in, standalone otherwise */}
