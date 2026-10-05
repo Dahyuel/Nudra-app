@@ -1,12 +1,14 @@
 import { Request, Response, NextFunction } from 'express';
 import { eq, and, gt } from 'drizzle-orm';
 import { db } from '../db';
-import { sessions, users, User } from '../db/schema';
+import { sessions, users, User, Organization } from '../db/schema';
+import { clearSessionCookie } from '../lib/sessionCookie';
 
 declare global {
   namespace Express {
     interface Request {
       user?: Omit<User, 'passwordHash'>;
+      organization?: Organization;
     }
   }
 }
@@ -28,6 +30,7 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
         avatarUrl: users.avatarUrl,
         grade: users.grade,
         instructorStatus: users.instructorStatus,
+        mustChangePassword: users.mustChangePassword,
         preferredLanguage: users.preferredLanguage,
         notifyCommunity: users.notifyCommunity,
         notifySessions: users.notifySessions,
@@ -40,7 +43,7 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
       .limit(1);
 
     if (rows.length === 0) {
-      res.clearCookie('session_id');
+      clearSessionCookie(res);
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
@@ -48,7 +51,7 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
     next();
   } catch (err) {
     console.error('requireAuth error', err);
-    res.clearCookie('session_id');
+    clearSessionCookie(res);
     return res.status(401).json({ message: 'Unauthorized' });
   }
 };

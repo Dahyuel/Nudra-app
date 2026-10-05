@@ -5,23 +5,17 @@ import { z } from 'zod';
 import { randomUUID, randomBytes, createHash } from 'crypto';
 import { eq, and, gt, ne } from 'drizzle-orm';
 import { db } from '../db';
-import { users, sessions, instructorApplications, passwordResetTokens } from '../db/schema';
+import { users, sessions, instructorApplications, passwordResetTokens, orgMemberships } from '../db/schema';
 import { requireAuth } from '../middleware/requireAuth';
 import { sendWelcomeEmail, sendPasswordResetEmail } from '../lib/mailer';
 import { createNotification } from '../lib/notifications';
-import { minioClient, THUMBNAIL_BUCKET, getThumbnailUrl } from '../lib/minio';
+import { r2Client, THUMBNAIL_BUCKET, getThumbnailUrl, storage } from '../lib/minio';
+import { clearSessionCookie, SESSION_COOKIE_OPTIONS } from '../lib/sessionCookie';
 
 const router = Router();
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-
-const COOKIE_OPTIONS = {
-  httpOnly: true,
-  sameSite: 'strict' as const,
-  secure: process.env.NODE_ENV === 'production',
-  path: '/',
-  maxAge: THIRTY_DAYS_MS,
-};
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync(randomBytes(32).toString('hex'), 12);
 
 function isValidPassword(password: string): boolean {
   if (!password || typeof password !== 'string') return false;
@@ -44,12 +38,30 @@ const publicUser = (user: typeof users.$inferSelect) => ({
   avatarUrl: user.avatarUrl,
   grade: user.grade,
   instructorStatus: user.instructorStatus,
+  mustChangePassword: user.mustChangePassword,
   preferences: {
     language: user.preferredLanguage,
     notifyCommunity: user.notifyCommunity,
     notifySessions: user.notifySessions,
   },
 });
+
+async function responseUser(req: Request, user: typeof users.$inferSelect) {
+  if (!req.organization) return publicUser(user);
+  const [membership] = await db.select({ id: orgMemberships.id, role: orgMemberships.role, status: orgMemberships.status })
+    .from(orgMemberships).where(and(eq(orgMemberships.orgId, req.organization.id), eq(orgMemberships.userId, user.id))).limit(1);
+  return {
+    ...publicUser(user),
+    organizationContext: {
+      id: req.organization.id,
+      name: req.organization.name,
+      slug: req.organization.slug,
+      logoUrl: req.organization.logoUrl,
+      primaryColor: req.organization.primaryColor,
+      membership: membership ?? null,
+    },
+  };
+}
 
 async function startSession(res: Response, userId: string) {
   const sessionRows = await db
@@ -60,7 +72,7 @@ async function startSession(res: Response, userId: string) {
     })
     .returning();
 
-  res.cookie('session_id', sessionRows[0].id, COOKIE_OPTIONS);
+  res.cookie('session_id', sessionRows[0].id, SESSION_COOKIE_OPTIONS);
 }
 
 const instructorApplicationSchema = z.object({
@@ -148,6 +160,10 @@ router.post('/register', async (req: Request, res: Response) => {
 
     const user = inserted[0];
 
+    if (req.organization) {
+      await db.insert(orgMemberships).values({ orgId: req.organization.id, userId: user.id, role: 'student', status: 'pending' });
+    }
+
     await startSession(res, user.id);
 
     sendWelcomeEmail({ name: user.name, email: user.email, role: user.role }).catch(console.warn);
@@ -161,7 +177,7 @@ router.post('/register', async (req: Request, res: Response) => {
 
     return res.status(201).json({
       message: 'Account created successfully',
-      user: publicUser(user),
+      user: await responseUser(req, user),
     });
   } catch (err) {
     console.error('register error', err);
@@ -236,7 +252,7 @@ router.post('/register-instructor', async (req: Request, res: Response) => {
 
     return res.status(201).json({
       message: 'Application submitted',
-      user: publicUser(user),
+      user: await responseUser(req, user),
     });
   } catch (err) {
     console.error('register-instructor error', err);
@@ -329,7 +345,7 @@ router.post('/reset-password', async (req: Request, res: Response) => {
 
     const passwordHash = await bcrypt.hash(password, 12);
     await db.transaction(async (tx) => {
-      await tx.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, resetToken.userId));
+      await tx.update(users).set({ passwordHash, mustChangePassword: false, updatedAt: new Date() }).where(eq(users.id, resetToken.userId));
       // One-time link: remove it (and any others), and sign the account out everywhere.
       await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, resetToken.userId));
       await tx.delete(sessions).where(eq(sessions.userId, resetToken.userId));
@@ -346,26 +362,18 @@ router.post('/login', async (req: Request, res: Response) => {
   try {
     const { email, password, role } = req.body ?? {};
 
-    if (!email || !password) {
+    if (typeof email !== 'string' || email.length > 255 || typeof password !== 'string' || password.length === 0 || password.length > 1024) {
       return res.status(400).json({ message: 'Email and password are required' });
     }
 
     const normalizedEmail = sanitizeEmail(email);
 
     const rows = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
-
-    if (rows.length === 0) {
-      return res.status(401).json({ message: 'Invalid email or password' });
-    }
-
     const user = rows[0];
-
-    if (role && user.role !== role) {
-      return res.status(401).json({ message: 'Invalid email or password' });
-    }
-
-    const valid = await bcrypt.compare(password, user.passwordHash);
-    if (!valid) {
+    // Always perform one password hash comparison so unknown emails and role
+    // mismatches take the same expensive path as an incorrect password.
+    const valid = await bcrypt.compare(password, user?.passwordHash ?? DUMMY_PASSWORD_HASH);
+    if (!user || !valid || (role !== undefined && role !== user.role)) {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
@@ -379,11 +387,11 @@ router.post('/login', async (req: Request, res: Response) => {
       })
       .returning();
 
-    res.cookie('session_id', sessionRows[0].id, COOKIE_OPTIONS);
+    res.cookie('session_id', sessionRows[0].id, SESSION_COOKIE_OPTIONS);
 
     return res.json({
       message: 'Logged in successfully',
-      user: publicUser(user),
+      user: await responseUser(req, user),
     });
   } catch (err) {
     console.error('login error', err);
@@ -399,7 +407,7 @@ router.post('/logout', async (req: Request, res: Response) => {
       await db.delete(sessions).where(eq(sessions.id, sessionId));
     }
 
-    res.clearCookie('session_id');
+    clearSessionCookie(res);
     return res.json({ message: 'Logged out successfully' });
   } catch (err) {
     console.error('logout error', err);
@@ -423,12 +431,12 @@ router.get('/me', async (req: Request, res: Response) => {
       .limit(1);
 
     if (rows.length === 0) {
-      res.clearCookie('session_id');
+      clearSessionCookie(res);
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
     // Same shape as login/register (publicUser never includes the password hash).
-    return res.json({ user: publicUser(rows[0].user) });
+    return res.json({ user: await responseUser(req, rows[0].user) });
   } catch (err) {
     console.error('me error', err);
     return res.status(500).json({ message: 'Internal server error' });
@@ -505,7 +513,7 @@ router.put('/password', requireAuth, async (req: Request, res: Response) => {
   try {
     const { currentPassword, newPassword } = req.body ?? {};
 
-    if (!currentPassword || !newPassword) {
+    if (!newPassword || (!currentPassword && !req.user!.mustChangePassword)) {
       return res.status(400).json({ message: 'Current and new password are required' });
     }
 
@@ -517,7 +525,7 @@ router.put('/password', requireAuth, async (req: Request, res: Response) => {
 
     const user = rows[0];
 
-    const valid = await bcrypt.compare(currentPassword, user.passwordHash);
+    const valid = currentPassword ? await bcrypt.compare(currentPassword, user.passwordHash) : user.mustChangePassword;
     if (!valid) {
       return res.status(400).json({ message: 'Current password is incorrect' });
     }
@@ -531,7 +539,7 @@ router.put('/password', requireAuth, async (req: Request, res: Response) => {
 
     const passwordHash = await bcrypt.hash(newPassword, 12);
 
-    await db.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, user.id));
+    await db.update(users).set({ passwordHash, mustChangePassword: false, updatedAt: new Date() }).where(eq(users.id, user.id));
 
     // Sign out every other session: if the old password leaked, anyone who
     // signed in with it loses access. The current session stays valid.
@@ -565,7 +573,7 @@ router.post(
       const ext = extByMime[req.file.mimetype] ?? 'jpg';
       const objectName = `avatars/${req.user!.id}-${randomUUID()}.${ext}`;
 
-      await minioClient.putObject(THUMBNAIL_BUCKET, objectName, req.file.buffer, req.file.size, {
+      await storage.putObject(THUMBNAIL_BUCKET, objectName, req.file.buffer, req.file.size, {
         'Content-Type': req.file.mimetype,
       });
 

@@ -13,9 +13,10 @@ import {
   lessonSummaries,
   users,
   weakTopics,
+  orgMemberships,
 } from '../db/schema';
 import { requireAuth, requireRole } from '../middleware/requireAuth';
-import { embedText } from '../lib/embeddings';
+import { embedText, getEmbeddingProvider } from '../lib/embeddings';
 import { chatCompletion, streamChatCompletion } from '../lib/deepseek';
 import { generateWeakTopics } from './quizzes';
 import { createRateLimiter } from '../middleware/rateLimit';
@@ -76,11 +77,26 @@ type LessonAccessResult =
   | { allowed: true; courseId: string | null }
   | { allowed: false; status: number; message: string };
 
-async function verifyLessonAccess(lessonId: string, userId: string, role: string): Promise<LessonAccessResult> {
+async function verifyCourseTenant(userId: string, courseId: string, organizationId?: string): Promise<boolean> {
+  const [course] = await db.select({ organizationId: courses.organizationId }).from(courses)
+    .where(eq(courses.id, courseId)).limit(1);
+  if (!course || (organizationId ? course.organizationId !== organizationId : course.organizationId !== null)) return false;
+  if (!organizationId) return true;
+  const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships).where(and(
+    eq(orgMemberships.orgId, organizationId), eq(orgMemberships.userId, userId), eq(orgMemberships.status, 'active')
+  )).limit(1);
+  return Boolean(membership);
+}
+
+async function verifyLessonAccess(lessonId: string, userId: string, role: string, organizationId?: string): Promise<LessonAccessResult> {
   const lessonRows = await db.select().from(lessons).where(eq(lessons.id, lessonId)).limit(1);
   if (lessonRows.length === 0) return { allowed: false, status: 404, message: 'Lesson not found' };
 
   const lesson = lessonRows[0];
+
+  if (lesson.courseId && !(await verifyCourseTenant(userId, lesson.courseId, organizationId))) {
+    return { allowed: false, status: 404, message: 'Lesson not found' };
+  }
 
   if (role === 'instructor' && lesson.courseId) {
     const courseRows = await db.select().from(courses).where(eq(courses.id, lesson.courseId)).limit(1);
@@ -116,7 +132,8 @@ async function getLessonTranscript(lessonId: string, maxChars?: number): Promise
   return maxChars && text.length > maxChars ? text.slice(0, maxChars) : text;
 }
 
-async function verifyCourseAccess(userId: string, role: string, courseId: string): Promise<boolean> {
+async function verifyCourseAccess(userId: string, role: string, courseId: string, organizationId?: string): Promise<boolean> {
+  if (!(await verifyCourseTenant(userId, courseId, organizationId))) return false;
   if (role === 'instructor') {
     const courseRows = await db.select().from(courses).where(eq(courses.id, courseId)).limit(1);
     if (courseRows.length > 0 && courseRows[0].instructorId === userId) {
@@ -138,7 +155,7 @@ router.post('/conversations', async (req: Request, res: Response) => {
     const { courseId } = req.body ?? {};
 
     if (courseId) {
-      const hasAccess = await verifyCourseAccess(studentId, role, courseId);
+      const hasAccess = await verifyCourseAccess(studentId, role, courseId, req.organization?.id);
       if (!hasAccess) {
         return res.status(403).json({ message: 'Access denied to this course' });
       }
@@ -186,7 +203,7 @@ router.post('/chat', chatLimiter, async (req: Request, res: Response) => {
 
     const effectiveCourseId = courseId || conversation?.courseId;
     if (effectiveCourseId) {
-      const hasAccess = await verifyCourseAccess(studentId, req.user!.role, effectiveCourseId);
+      const hasAccess = await verifyCourseAccess(studentId, req.user!.role, effectiveCourseId, req.organization?.id);
       if (!hasAccess) {
         return res.status(403).json({ message: 'Access denied to this course' });
       }
@@ -207,6 +224,7 @@ router.post('/chat', chatLimiter, async (req: Request, res: Response) => {
         const chunks = await db.execute(sql`
           SELECT content FROM lesson_chunks
           WHERE lesson_id IN (SELECT id FROM lessons WHERE course_id = ${effectiveCourseId})
+            AND embedding_provider = ${getEmbeddingProvider()}
           ORDER BY embedding <=> ${JSON.stringify(embedding)}::vector(768)
           LIMIT 5
         `);
@@ -392,7 +410,7 @@ router.post('/flashcards/:lessonId', flashcardLimiter, async (req: Request, res:
     const role = req.user!.role;
     const { lessonId } = req.params;
 
-    const access = await verifyLessonAccess(lessonId, userId, role);
+    const access = await verifyLessonAccess(lessonId, userId, role, req.organization?.id);
     if (!access.allowed) {
       return res.status(access.status).json({ message: access.message });
     }
@@ -484,7 +502,7 @@ router.post('/summary/:lessonId', summaryLimiter, async (req: Request, res: Resp
     const role = req.user!.role;
     const { lessonId } = req.params;
 
-    const access = await verifyLessonAccess(lessonId, userId, role);
+    const access = await verifyLessonAccess(lessonId, userId, role, req.organization?.id);
     if (!access.allowed) {
       return res.status(access.status).json({ message: access.message });
     }
@@ -533,7 +551,7 @@ router.get('/summary/:lessonId', async (req: Request, res: Response) => {
     const role = req.user!.role;
     const { lessonId } = req.params;
 
-    const access = await verifyLessonAccess(lessonId, userId, role);
+    const access = await verifyLessonAccess(lessonId, userId, role, req.organization?.id);
     if (!access.allowed) {
       return res.status(access.status).json({ message: access.message });
     }

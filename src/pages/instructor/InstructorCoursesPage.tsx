@@ -46,7 +46,11 @@ export const InstructorCoursesPage: React.FC = () => {
   };
 
   const statusOf = (course: CourseRow) =>
-    course.isPublished
+    course.approvalStatus === 'pending'
+      ? { label: 'waiting for organization approval', className: 'bg-blue-100 text-blue-800' }
+      : course.approvalStatus === 'rejected'
+        ? { label: 'rejected by organization', className: 'bg-red-100 text-red-800' }
+        : course.isPublished
       ? { label: 'published', className: 'bg-emerald-100 text-emerald-800' }
       : course.enrollmentCount > 0
         ? { label: 'unpublished', className: 'bg-gray-100 text-gray-700' }
@@ -154,13 +158,13 @@ export const InstructorCoursesPage: React.FC = () => {
                       </td>
                       <td className="py-4 px-2">
                         <div className="flex items-center justify-end gap-2 flex-wrap">
-                          <button
+                          {course.approvalStatus === 'approved' && <button
                             onClick={() => navigate(`/instructor/upload?edit=${course.id}`)}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#2D6A4F] text-white text-xs font-bold hover:bg-[#23533e] transition-colors"
                           >
                             <Edit3 className="w-3.5 h-3.5" />
                             <span>Edit</span>
-                          </button>
+                          </button>}
                           <button
                             onClick={() => navigate(`/course/${course.id}`)}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-gray-200 text-xs font-bold text-gray-700 hover:bg-[#F8FAF9] transition-colors"
@@ -168,7 +172,7 @@ export const InstructorCoursesPage: React.FC = () => {
                             <Eye className="w-3.5 h-3.5" />
                             <span>View</span>
                           </button>
-                          <button
+                          {course.approvalStatus === 'approved' && <button
                             onClick={() => togglePublished(course)}
                             disabled={busy}
                             title={
@@ -180,7 +184,7 @@ export const InstructorCoursesPage: React.FC = () => {
                           >
                             {course.isPublished ? <EyeOff className="w-3.5 h-3.5" /> : <Globe className="w-3.5 h-3.5" />}
                             <span>{course.isPublished ? 'Unpublish' : 'Publish'}</span>
-                          </button>
+                          </button>}
                           <button
                             onClick={() => setConfirmDelete(course)}
                             disabled={busy || course.enrollmentCount > 0}

@@ -1,16 +1,19 @@
 import os from 'os';
 import path from 'path';
 import fs from 'fs/promises';
-import { createReadStream } from 'fs';
+import fsSync, { createReadStream } from 'fs';
 import { Worker } from 'bullmq';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
+import OpenAI from 'openai';
 import axios from 'axios';
 import { eq, sql } from 'drizzle-orm';
 import { db } from '../db';
 import { videoJobs, lessons, lessonChunks } from '../db/schema';
-import { minioClient, RAW_VIDEO_BUCKET, HLS_BUCKET, getHlsPlaylistKey, listRawVideoKeys } from '../lib/minio';
-import { embedText } from '../lib/embeddings';
+import { r2Client, storage, downloadObject, removeObject, RAW_VIDEO_BUCKET, HLS_BUCKET, getHlsPlaylistKey, listRawVideoKeys } from '../lib/minio';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { embedText, getEmbeddingProvider } from '../lib/embeddings';
+import { getRedisUrl } from '../lib/redisConnection';
 
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
@@ -36,10 +39,9 @@ function chunkText(text: string): string[] {
 }
 
 const connection = {
-  url: process.env.REDIS_URL || 'redis://localhost:6379',
+  url: getRedisUrl(),
 };
 
-const WHISPER_URL = process.env.WHISPER_URL || 'http://localhost:5001';
 
 async function setJobStatus(
   lessonId: string,
@@ -81,10 +83,26 @@ function runFfmpeg(inputPath: string, outputDir: string): Promise<void> {
   });
 }
 
+function extractGroqAudioChunks(inputPath: string, outputPattern: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    ffmpeg(inputPath)
+      .noVideo()
+      .audioCodec('libmp3lame')
+      .audioChannels(1)
+      .audioFrequency(16000)
+      .audioBitrate('24k')
+      .outputOptions(['-f', 'segment', '-segment_time', '600', '-reset_timestamps', '1'])
+      .output(outputPattern)
+      .on('end', () => resolve())
+      .on('error', (err) => reject(err))
+      .run();
+  });
+}
+
 async function removeRawVideos(lessonId: string) {
   for (const key of await listRawVideoKeys(lessonId)) {
     try {
-      await minioClient.removeObject(RAW_VIDEO_BUCKET, key);
+      await removeObject(RAW_VIDEO_BUCKET, key);
     } catch (err) {
       console.warn(`failed to remove raw video ${key}`, err);
     }
@@ -96,27 +114,58 @@ async function removeRawVideos(lessonId: string) {
  * generation, tutor context). Throws with a readable message on failure so the
  * job can be marked `transcript_failed` instead of silently reporting success.
  */
-async function transcribeAndEmbed(lessonId: string, minioKey: string) {
+async function transcribeAndEmbed(lessonId: string, localRawPath: string, minioKey: string) {
   let transcriptText: string;
   let transcriptSegments: string | null;
   try {
-    const { data } = await axios.post(
-      `${WHISPER_URL}/transcribe`,
-      { minio_key: minioKey },
-      {
+    const transcriptionProvider = process.env.TRANSCRIPTION_PROVIDER || 'auto';
+    const useGroq = transcriptionProvider === 'groq' ||
+      (transcriptionProvider === 'auto' && process.env.AI_ENVIRONMENT === 'production');
+    if (useGroq) {
+      if (!process.env.GROQ_API_KEY) throw new Error('GROQ_API_KEY is required when TRANSCRIPTION_PROVIDER=groq');
+      const client = new OpenAI({
+        apiKey: process.env.GROQ_API_KEY,
+        baseURL: (process.env.GROQ_API_BASE_URL || 'https://api.groq.com/openai/v1').replace(/\/$/, ''),
+      });
+      const audioDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nudra-groq-audio-'));
+      try {
+        const chunkPattern = path.join(audioDir, 'audio-%03d.mp3');
+        await extractGroqAudioChunks(localRawPath, chunkPattern);
+        const audioFiles = (await fs.readdir(audioDir)).filter((file) => file.endsWith('.mp3')).sort();
+        if (audioFiles.length === 0) throw new Error('No audio track was found in this video');
+        const texts: string[] = [];
+        const segments: Record<string, unknown>[] = [];
+        for (let i = 0; i < audioFiles.length; i++) {
+          const transcription = await client.audio.transcriptions.create({
+            file: fsSync.createReadStream(path.join(audioDir, audioFiles[i])),
+            model: process.env.GROQ_TRANSCRIPTION_MODEL || 'whisper-large-v3-turbo',
+            response_format: 'verbose_json',
+          });
+          if (transcription.text?.trim()) texts.push(transcription.text.trim());
+          const chunkSegments = (transcription as { segments?: Record<string, unknown>[] }).segments ?? [];
+          segments.push(...chunkSegments.map((segment) => ({
+            ...segment,
+            start: Number(segment.start || 0) + i * 600,
+            end: Number(segment.end || 0) + i * 600,
+          })));
+        }
+        transcriptText = texts.join(' ').trim();
+        transcriptSegments = segments.length ? JSON.stringify(segments) : null;
+      } finally {
+        await fs.rm(audioDir, { recursive: true, force: true });
+      }
+    } else {
+      const whisperUrl = (process.env.WHISPER_URL || 'http://localhost:5001').replace(/\/$/, '');
+      const { data } = await axios.post(`${whisperUrl}/transcribe`, { minio_key: minioKey }, {
         headers: { 'X-API-Key': process.env.WHISPER_API_KEY || process.env.SESSION_SECRET || '' },
         timeout: 30 * 60 * 1000,
-      }
-    );
-    transcriptText = (data.transcript ?? '').trim();
-    transcriptSegments = data.segments ? JSON.stringify(data.segments) : null;
-  } catch (err) {
-    if (axios.isAxiosError(err)) {
-      if (!err.response) throw new Error(`Transcription service unreachable at ${WHISPER_URL}`);
-      if (err.response.status === 401) throw new Error('Transcription service rejected the API key (check WHISPER_API_KEY)');
-      throw new Error(`Transcription failed (HTTP ${err.response.status})`);
+      });
+      transcriptText = (data.transcript ?? '').trim();
+      transcriptSegments = data.segments ? JSON.stringify(data.segments) : null;
     }
-    throw err;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Transcription failed: ${message}`);
   }
 
   if (!transcriptText) throw new Error('No speech was detected in this video');
@@ -143,6 +192,7 @@ async function transcribeAndEmbed(lessonId: string, minioKey: string) {
         chunkIndex: i,
         content: chunks[i],
         embedding: sql`${JSON.stringify(embeddings[i])}::vector(768)`,
+        embeddingProvider: getEmbeddingProvider(),
       });
     }
   });
@@ -164,7 +214,9 @@ const worker = new Worker(
     if (transcriptOnly) {
       try {
         await setJobStatus(lessonId, { status: 'transcribed', errorMsg: null });
-        const result = await transcribeAndEmbed(lessonId, minioKey);
+        const rawPath = path.join(os.tmpdir(), path.basename(minioKey));
+        await downloadObject(RAW_VIDEO_BUCKET, minioKey, rawPath);
+        const result = await transcribeAndEmbed(lessonId, rawPath, minioKey);
         await removeRawVideos(lessonId);
         await setJobStatus(lessonId, { status: 'done', ...result });
       } catch (err) {
@@ -184,7 +236,7 @@ const worker = new Worker(
 
       await fs.mkdir(hlsDir, { recursive: true });
 
-      await minioClient.fGetObject(RAW_VIDEO_BUCKET, minioKey, rawPath);
+      await downloadObject(RAW_VIDEO_BUCKET, minioKey, rawPath);
 
       await runFfmpeg(rawPath, hlsDir);
 
@@ -193,7 +245,7 @@ const worker = new Worker(
         const filePath = path.join(hlsDir, file);
         const stat = await fs.stat(filePath);
         const contentType = file.endsWith('.m3u8') ? 'application/x-mpegURL' : 'video/MP2T';
-        await minioClient.putObject(HLS_BUCKET, `lessons/${lessonId}/${file}`, createReadStream(filePath), stat.size, {
+        await storage.putObject(HLS_BUCKET, `lessons/${lessonId}/${file}`, createReadStream(filePath), stat.size, {
           'Content-Type': contentType,
         });
       }
@@ -206,7 +258,9 @@ const worker = new Worker(
       await setJobStatus(lessonId, { status: 'transcribed', hlsUrl: hlsPath });
 
       try {
-        const result = await transcribeAndEmbed(lessonId, minioKey);
+        const retryRawPath = path.join(os.tmpdir(), path.basename(minioKey));
+        await downloadObject(RAW_VIDEO_BUCKET, minioKey, retryRawPath);
+        const result = await transcribeAndEmbed(lessonId, retryRawPath, minioKey);
         // Only delete the raw upload once everything succeeded: Whisper reads the
         // raw file, so keeping it on failure is what makes "Retry transcript" possible.
         await removeRawVideos(lessonId);

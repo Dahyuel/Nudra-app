@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LogOut, Settings, Moon, Sun, GraduationCap, LayoutDashboard } from 'lucide-react';
+import { LogOut, Settings, HelpCircle, Moon, Sun, GraduationCap } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 
@@ -19,9 +19,10 @@ interface ProfileMenuProps {
   align?: 'left' | 'right';
   showName?: boolean;
   openUp?: boolean;
+  onNavigate?: () => void;
 }
 
-export const ProfileMenu: React.FC<ProfileMenuProps> = ({ align = 'left', showName = true, openUp = false }) => {
+export const ProfileMenu: React.FC<ProfileMenuProps> = ({ align = 'left', showName = true, openUp = false, onNavigate }) => {
   const navigate = useNavigate();
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
@@ -40,6 +41,7 @@ export const ProfileMenu: React.FC<ProfileMenuProps> = ({ align = 'left', showNa
 
   const go = (path: string) => {
     setOpen(false);
+    onNavigate?.();
     navigate(path);
   };
 
@@ -48,7 +50,7 @@ export const ProfileMenu: React.FC<ProfileMenuProps> = ({ align = 'left', showNa
       <button
         id="profile-menu-btn"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center gap-3 p-1 sm:pr-3 rounded-full sm:rounded-2xl hover:bg-white dark:hover:bg-gray-800 transition-colors text-right"
+        className="flex items-center gap-3 p-1 sm:pr-3 rounded-full sm:rounded-2xl hover:bg-white dark:hover:bg-gray-800 transition-colors text-left"
       >
         {user?.avatarUrl ? (
           <img
@@ -80,22 +82,15 @@ export const ProfileMenu: React.FC<ProfileMenuProps> = ({ align = 'left', showNa
           className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} ${openUp ? 'bottom-full mb-2' : 'top-full mt-2'} w-60 bg-white dark:bg-gray-900 rounded-2xl shadow-xl border border-gray-100 dark:border-gray-800 p-2 z-50`}
         >
           <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-800 mb-1">
-            <p className="text-xs font-bold text-gray-900 dark:text-gray-100">{user?.name}</p>
-            <p className="text-[11px] text-gray-500 dark:text-gray-400 truncate">{user?.email}</p>
+            <p className="text-left text-xs font-bold text-gray-900 dark:text-gray-100">{user?.name}</p>
+            <p dir="ltr" className="text-left text-[11px] text-gray-500 dark:text-gray-400 truncate">{user?.email}</p>
           </div>
 
           {user?.role === 'instructor' && (
             <>
               <button
-                onClick={() => go('/instructor/dashboard')}
-                className="w-full flex items-center gap-2 text-right px-3 py-2 text-xs font-bold text-[#2D6A4F] dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-colors"
-              >
-                <LayoutDashboard className="w-3.5 h-3.5" />
-                <span>Instructor Dashboard</span>
-              </button>
-              <button
                 onClick={() => go('/student-portal')}
-                className="w-full flex items-center gap-2 text-right px-3 py-2 text-xs font-bold text-[#2D6A4F] dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-colors"
+                className="w-full flex items-center gap-2 text-left px-3 py-2 text-xs font-bold text-[#2D6A4F] dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-colors"
               >
                 <GraduationCap className="w-3.5 h-3.5" />
                 <span>Student Portal</span>
@@ -103,27 +98,25 @@ export const ProfileMenu: React.FC<ProfileMenuProps> = ({ align = 'left', showNa
             </>
           )}
 
-          {user?.role === 'student' && (
-            <button
-              onClick={() => go('/dashboard')}
-              className="w-full flex items-center gap-2 text-right px-3 py-2 text-xs font-bold text-[#2D6A4F] dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-colors"
-            >
-              <GraduationCap className="w-3.5 h-3.5" />
-              <span>Student Dashboard</span>
-            </button>
-          )}
-
           <button
             onClick={() => go('/settings')}
-            className="w-full flex items-center gap-2 text-right px-3 py-2 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-[#F8FAF9] dark:hover:bg-gray-800 rounded-xl transition-colors"
+            className="w-full flex items-center gap-2 text-left px-3 py-2 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-[#F8FAF9] dark:hover:bg-gray-800 rounded-xl transition-colors"
           >
             <Settings className="w-3.5 h-3.5" />
             <span>Settings</span>
           </button>
 
           <button
+            onClick={() => go('/help')}
+            className="w-full flex items-center gap-2 text-left px-3 py-2 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-[#F8FAF9] dark:hover:bg-gray-800 rounded-xl transition-colors"
+          >
+            <HelpCircle className="w-3.5 h-3.5" />
+            <span>Help</span>
+          </button>
+
+          <button
             onClick={toggleTheme}
-            className="w-full flex items-center justify-between text-right px-3 py-2 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-[#F8FAF9] dark:hover:bg-gray-800 rounded-xl transition-colors"
+            className="w-full flex items-center justify-between text-left px-3 py-2 text-xs font-semibold text-gray-700 dark:text-gray-200 hover:bg-[#F8FAF9] dark:hover:bg-gray-800 rounded-xl transition-colors"
           >
             <span className="flex items-center gap-2">
               {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
@@ -148,7 +141,7 @@ export const ProfileMenu: React.FC<ProfileMenuProps> = ({ align = 'left', showNa
                 setOpen(false);
                 logout();
               }}
-              className="w-full flex items-center gap-2 text-right px-3 py-2 text-xs font-bold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-colors"
+              className="w-full flex items-center gap-2 text-left px-3 py-2 text-xs font-bold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-xl transition-colors"
             >
               <LogOut className="w-3.5 h-3.5" />
               <span>Log Out</span>

@@ -627,26 +627,26 @@ export const CourseDetailPage: React.FC = () => {
         <aside className="lg:col-span-4 sticky top-24 space-y-6">
           <div className="rounded-2xl bg-white border border-gray-100 shadow-lg overflow-hidden">
             {/* Thumbnail with Video Play Overlay */}
-            <div className="relative aspect-video w-full bg-gray-900 group cursor-pointer overflow-hidden">
+              <div className={`relative aspect-video w-full bg-gray-900 group overflow-hidden ${course.deliveryMode === 'offline' ? '' : 'cursor-pointer'}`}>
               <img
                 src={course.thumbnail ?? undefined}
                 alt={course.title}
                 referrerPolicy="no-referrer"
                 className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 opacity-90"
               />
-              <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
+              {course.deliveryMode !== 'offline' && <div className="absolute inset-0 bg-black/30 flex items-center justify-center">
                 <div className="w-12 h-12 rounded-full bg-white/90 text-[#2D6A4F] flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
                   <Play className="w-5 h-5 fill-current ml-0.5" />
                 </div>
-              </div>
+              </div>}
               <span className="absolute bottom-3 left-3 text-[10px] font-bold text-white bg-black/60 px-2 py-0.5 rounded backdrop-blur-xs">
-                Preview Course Trailer
+                {course.deliveryMode === 'offline' ? 'In person' : 'Preview Course Trailer'}
               </span>
             </div>
 
             {/* Price & Action Buttons */}
             <div className="p-6 space-y-6">
-              <div className="flex items-baseline justify-between">
+              {course.deliveryMode === 'offline' ? <div className="space-y-2"><span className="text-2xl font-black text-[#2D6A4F]">Offline · booking only</span><p className="text-sm text-gray-600">{course.location || 'Location details available from the organization'}{course.scheduleText ? ` · ${course.scheduleText}` : ''}</p></div> : <div className="flex items-baseline justify-between">
                 <div>
                   {course.price === 0 ? (
                     <span className="text-3xl font-black text-[#2D6A4F]">Free</span>
@@ -666,10 +666,10 @@ export const CourseDetailPage: React.FC = () => {
                 <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-100">
                   Full Lifetime Access
                 </span>
-              </div>
+              </div>}
 
               {/* Action Button */}
-              {isEnrolled ? (
+              {course.deliveryMode === 'offline' ? (course.bookingUrl ? <a href={course.bookingUrl} target="_blank" rel="noreferrer" className="w-full flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-[#2D6A4F] text-white text-sm font-bold">Book this course <ArrowRight className="w-4 h-4" /></a> : <p className="rounded-xl bg-gray-50 p-3 text-center text-sm text-gray-600">Contact the organization to book this course.</p>) : isEnrolled ? (
                 <div className="space-y-2">
                   <Link
                     to={`/course/${course.id}/lesson/${course.curriculum?.[0]?.lessons?.[0]?.id || 'les-1'}`}

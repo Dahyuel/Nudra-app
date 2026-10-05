@@ -14,6 +14,9 @@ export interface InstructorCourse {
   originalPrice: number | null;
   duration: string | null;
   isPublished: boolean;
+  approvalStatus: string;
+  deliveryMode: 'online' | 'offline';
+  location: string | null;
   createdAt: string;
   updatedAt: string;
   enrollmentCount: number;

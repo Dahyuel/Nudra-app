@@ -28,6 +28,7 @@ __pycache__/
 .ruff_cache/
 
 # Environment / secrets — never commit real values
+creds.txt
 .env
 .env.*
 !.env.example

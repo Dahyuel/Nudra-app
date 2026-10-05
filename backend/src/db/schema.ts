@@ -9,15 +9,18 @@ import {
   numeric,
   boolean,
   integer,
+  bigint,
+  jsonb,
   unique,
   uniqueIndex,
   check,
   customType,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
+import type { LandingData } from '../lib/organizationLanding';
 
 // 'admin' accounts are created with `npm run admin` (never via public sign-up).
-export const roleEnum = pgEnum('role', ['student', 'instructor', 'admin']);
+export const roleEnum = pgEnum('role', ['student', 'instructor', 'admin', 'organization_manager']);
 
 const vector768 = customType<{ data: number[] }>({
   dataType() {
@@ -36,6 +39,7 @@ export const users = pgTable('users', {
   // Instructor approval: 'pending' | 'approved' | 'rejected'. NULL = not an
   // applicant (students) or a legacy/seeded instructor, treated as approved.
   instructorStatus: varchar('instructor_status', { length: 20 }),
+  mustChangePassword: boolean('must_change_password').notNull().default(false),
   // Settings page preferences.
   preferredLanguage: varchar('preferred_language', { length: 5 }).notNull().default('en'),
   notifyCommunity: boolean('notify_community').notNull().default(true),
@@ -43,6 +47,45 @@ export const users = pgTable('users', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });
+
+export const organizations = pgTable('organizations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: varchar('name', { length: 255 }).notNull(),
+  slug: varchar('slug', { length: 100 }).notNull().unique(),
+  ownerId: uuid('owner_id').references(() => users.id),
+  logoUrl: text('logo_url'),
+  primaryColor: varchar('primary_color', { length: 7 }),
+  customDomain: varchar('custom_domain', { length: 255 }).unique(),
+  customDomainStatus: varchar('custom_domain_status', { length: 20 }).notNull().default('unconfigured'),
+  customDomainDnsRecords: jsonb('custom_domain_dns_records').$type<Array<{ type: string; name: string; value: string; purpose: string }>>().notNull().default([]),
+  customDomainVerificationTokenHash: varchar('custom_domain_verification_token_hash', { length: 64 }),
+  customDomainVerifiedAt: timestamp('custom_domain_verified_at', { withTimezone: true }),
+  isActive: boolean('is_active').notNull().default(true),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+// Private drafts are served only through the authenticated manager API.
+export const organizationLandingPages = pgTable('organization_landing_pages', {
+  orgId: uuid('org_id').primaryKey().references(() => organizations.id, { onDelete: 'cascade' }),
+  draft: jsonb('draft').$type<LandingData>().notNull(),
+  published: jsonb('published').$type<LandingData>(),
+  revision: integer('revision').notNull().default(1),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  publishedAt: timestamp('published_at', { withTimezone: true }),
+});
+
+export const orgMemberships = pgTable(
+  'org_memberships',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orgId: uuid('org_id').notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+    userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+    role: varchar('role', { length: 30 }).notNull().default('student'),
+    status: varchar('status', { length: 20 }).notNull().default('active'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [unique().on(t.orgId, t.userId)]
+);
 
 // Course purchases. An enrollment for a paid course is created only when its
 // order becomes 'paid' (confirmed by the payment provider), never by the client.
@@ -127,6 +170,7 @@ export const courses = pgTable('courses', {
   instructorId: uuid('instructor_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
+  organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'set null' }),
   title: varchar('title', { length: 255 }).notNull(),
   titleAr: varchar('title_ar', { length: 255 }),
   subtitle: varchar('subtitle', { length: 255 }),
@@ -138,6 +182,13 @@ export const courses = pgTable('courses', {
   originalPrice: numeric('original_price', { precision: 10, scale: 2 }),
   durationText: varchar('duration_text', { length: 255 }),
   isPublished: boolean('is_published').notNull().default(false),
+  deliveryMode: varchar('delivery_mode', { length: 20 }).notNull().default('online'),
+  approvalStatus: varchar('approval_status', { length: 20 }).notNull().default('approved'),
+  approvalNote: text('approval_note'),
+  location: text('location'),
+  bookingUrl: text('booking_url'),
+  scheduleText: text('schedule_text'),
+  capacity: integer('capacity'),
   sanaweyaGrade: varchar('sanaweya_grade', { length: 20 }),
   sanaweyaSubject: varchar('sanaweya_subject', { length: 255 }),
   ministryAligned: boolean('ministry_aligned').notNull().default(false),
@@ -222,6 +273,21 @@ export const videoJobs = pgTable(
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   }
 );
+
+export const videoUploadSessions = pgTable('video_upload_sessions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  lessonId: uuid('lesson_id').notNull().references(() => lessons.id, { onDelete: 'cascade' }),
+  instructorId: uuid('instructor_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  storageKey: text('storage_key').notNull(),
+  multipartUploadId: text('multipart_upload_id').notNull(),
+  fileName: varchar('file_name', { length: 255 }).notNull(),
+  contentType: varchar('content_type', { length: 120 }).notNull(),
+  fileSize: bigint('file_size', { mode: 'number' }).notNull(),
+  partSize: integer('part_size').notNull(),
+  status: varchar('status', { length: 20 }).notNull().default('uploading'),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const lessonProgress = pgTable(
   'lesson_progress',
@@ -340,6 +406,7 @@ export const lessonChunks = pgTable(
     chunkIndex: integer('chunk_index').notNull(),
     content: text('content').notNull(),
     embedding: vector768('embedding').notNull(),
+    embeddingProvider: varchar('embedding_provider', { length: 120 }).notNull().default('ollama:nomic-embed-text:768'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (table) => [uniqueIndex('lesson_chunks_lesson_index_unique').on(table.lessonId, table.chunkIndex)]
@@ -618,3 +685,8 @@ export type Certificate = typeof certificates.$inferSelect;
 export type NewCertificate = typeof certificates.$inferInsert;
 export type Notification = typeof notifications.$inferSelect;
 export type NewNotification = typeof notifications.$inferInsert;
+
+export type Organization = typeof organizations.$inferSelect;
+export type NewOrganization = typeof organizations.$inferInsert;
+export type OrgMembership = typeof orgMemberships.$inferSelect;
+export type NewOrgMembership = typeof orgMemberships.$inferInsert;

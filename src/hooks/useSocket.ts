@@ -5,7 +5,7 @@ let socket: Socket | null = null;
 
 function getSocket(): Socket {
   if (!socket) {
-    socket = io(import.meta.env.VITE_API_URL, {
+    socket = io(import.meta.env.VITE_API_URL || window.location.origin, {
       withCredentials: true,
       autoConnect: true,
     });

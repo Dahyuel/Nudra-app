@@ -733,6 +733,7 @@ export const AdminDashboardPage: React.FC = () => {
               )}
             </button>
           ))}
+          <Link to="/admin/organizations" className="px-3 sm:px-4 py-2.5 text-xs sm:text-sm font-bold border-b-2 border-transparent whitespace-nowrap text-gray-500 hover:text-gray-800">Organizations</Link>
         </nav>
       </header>
 

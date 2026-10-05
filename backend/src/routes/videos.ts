@@ -2,9 +2,9 @@ import { Router, Request, Response } from 'express';
 import { eq, and } from 'drizzle-orm';
 import rateLimit from 'express-rate-limit';
 import { db } from '../db';
-import { lessons, courses, enrollments } from '../db/schema';
+import { lessons, courses, enrollments, orgMemberships } from '../db/schema';
 import { requireAuth } from '../middleware/requireAuth';
-import { minioClient, HLS_BUCKET, getHlsPlaylistKey, getHlsObjectPrefix } from '../lib/minio';
+import { r2Client, HLS_BUCKET, getHlsPlaylistKey, getHlsObjectPrefix, storage } from '../lib/minio';
 
 const router = Router();
 
@@ -24,7 +24,8 @@ router.use(videoRateLimiter);
 async function verifyLessonAccess(
   lessonId: string,
   userId: string,
-  role: string
+  role: string,
+  organizationId?: string
 ): Promise<{ allowed: boolean; status?: number; message?: string }> {
   const lessonRows = await db.select().from(lessons).where(eq(lessons.id, lessonId)).limit(1);
   if (lessonRows.length === 0) {
@@ -32,6 +33,20 @@ async function verifyLessonAccess(
   }
 
   const lesson = lessonRows[0];
+
+  if (lesson.courseId) {
+    const [course] = await db.select({ organizationId: courses.organizationId, instructorId: courses.instructorId })
+      .from(courses).where(eq(courses.id, lesson.courseId)).limit(1);
+    if (!course || (organizationId ? course.organizationId !== organizationId : course.organizationId !== null)) {
+      return { allowed: false, status: 404, message: 'Lesson not found' };
+    }
+    if (organizationId) {
+      const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships).where(and(
+        eq(orgMemberships.orgId, organizationId), eq(orgMemberships.userId, userId), eq(orgMemberships.status, 'active')
+      )).limit(1);
+      if (!membership) return { allowed: false, status: 403, message: 'Organization membership is required.' };
+    }
+  }
 
   if (role === 'instructor' && lesson.courseId) {
     const courseRows = await db.select().from(courses).where(eq(courses.id, lesson.courseId)).limit(1);
@@ -64,13 +79,13 @@ router.get('/:lessonId/playlist.m3u8', requireAuth, async (req: Request, res: Re
     const userId = req.user!.id;
     const role = req.user!.role;
 
-    const access = await verifyLessonAccess(lessonId, userId, role);
+    const access = await verifyLessonAccess(lessonId, userId, role, req.organization?.id);
     if (!access.allowed) {
       return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
     }
 
     const playlistKey = getHlsPlaylistKey(lessonId);
-    const stream = await minioClient.getObject(HLS_BUCKET, playlistKey);
+    const stream = await storage.getObject(HLS_BUCKET, playlistKey);
 
     let body = '';
     stream.on('data', (chunk) => {
@@ -122,14 +137,14 @@ router.get('/:lessonId/:filename', requireAuth, async (req: Request, res: Respon
       return res.status(400).json({ message: 'Invalid file name' });
     }
 
-    const access = await verifyLessonAccess(lessonId, userId, role);
+    const access = await verifyLessonAccess(lessonId, userId, role, req.organization?.id);
     if (!access.allowed) {
       return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
     }
 
     const objectName = `${getHlsObjectPrefix(lessonId)}${filename}`;
 
-    const stream = await minioClient.getObject(HLS_BUCKET, objectName);
+    const stream = await storage.getObject(HLS_BUCKET, objectName);
     const contentType = filename.endsWith('.m3u8') ? 'application/x-mpegURL' : 'video/MP2T';
 
     res.setHeader('Content-Type', contentType);

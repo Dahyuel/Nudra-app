@@ -6,11 +6,20 @@ export type User = {
   id: string;
   name: string;
   email: string;
-  role: 'student' | 'instructor' | 'admin';
+  role: 'student' | 'instructor' | 'admin' | 'organization_manager';
   avatarUrl: string | null;
   grade: string | null;
   /** Instructor approval state; null for students and legacy/seeded instructors. */
   instructorStatus: 'pending' | 'approved' | 'rejected' | null;
+  mustChangePassword: boolean;
+  organizationContext?: {
+    id: string;
+    name: string;
+    slug: string;
+    logoUrl: string | null;
+    primaryColor: string | null;
+    membership: { id: string; role: string; status: string } | null;
+  };
   /** Saved from the Settings page. */
   preferences?: { language: 'en' | 'ar'; notifyCommunity: boolean; notifySessions: boolean };
 };
@@ -39,6 +48,13 @@ const authErrorMessage = (err: any, fallback: string) => {
 };
 
 export const homePathFor = (user: User) => {
+  if (user.organizationContext) {
+    const membership = user.organizationContext.membership;
+    const organizationQuery = `?org=${encodeURIComponent(user.organizationContext.slug)}`;
+    if (membership?.status === 'active' && membership.role === 'organization_manager') return `/organization/manage${organizationQuery}`;
+    if (membership?.status === 'active' && membership.role === 'instructor' && isApprovedInstructor(user)) return `/instructor/dashboard${organizationQuery}`;
+    return `/organization${organizationQuery}`;
+  }
   if (user.role === 'admin') return '/admin';
   if (user.role !== 'instructor') return '/dashboard';
   return isApprovedInstructor(user) ? '/instructor/dashboard' : '/instructor/pending';

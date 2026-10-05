@@ -8,7 +8,7 @@ interface ChatMessage {
   createdAt: string;
 }
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_URL = import.meta.env.VITE_API_URL ?? window.location.origin;
 
 export function useAiChat(courseId: string | null) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);

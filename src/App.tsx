@@ -1,8 +1,8 @@
 import React from 'react';
-import { Routes, Route, Navigate, Outlet } from 'react-router-dom';
+import { Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { DashboardLayout } from './layouts/DashboardLayout';
 import { InstructorLayout } from './layouts/InstructorLayout';
-import { LandingPage } from './pages/LandingPage';
+import { OrganizationLayout } from './layouts/OrganizationLayout';
 import { DashboardPage } from './pages/DashboardPage';
 import { CatalogPage } from './pages/CatalogPage';
 import { MyCoursesPage } from './pages/MyCoursesPage';
@@ -33,8 +33,11 @@ import { InstructorStudentsPage } from './pages/instructor/InstructorStudentsPag
 import { InstructorEarningsPage } from './pages/instructor/InstructorEarningsPage';
 import { InstructorAnalyticsPage } from './pages/instructor/InstructorAnalyticsPage';
 import { UploadCoursePage } from './pages/instructor/UploadCoursePage';
+import { AdminOrganizationsPage, OrganizationManagerPage, OrganizationPortalPage, TenantLandingPage } from './pages/OrganizationPages';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import { useAuth, homePathFor } from './context/AuthContext';
+
+const OrganizationLandingEditor = React.lazy(() => import('./pages/OrganizationLandingEditor'));
 
 const FallbackRedirect: React.FC = () => {
   const { user, isLoading } = useAuth();
@@ -71,14 +74,27 @@ const PublicOnlyRoute: React.FC<{ children: React.ReactNode }> = ({ children }) 
 
 const DashboardShell: React.FC = () => {
   const { user } = useAuth();
-  return user ? <DashboardLayout /> : <Outlet />;
+  const location = useLocation();
+  if (user?.organizationContext && user.role === 'student' &&
+      !location.pathname.startsWith('/organization') && !location.pathname.startsWith('/course/') &&
+      !['/settings', '/help'].includes(location.pathname)) {
+    return <Navigate to="/organization" replace />;
+  }
+  if (!user) return <Outlet />;
+  if (user.mustChangePassword && location.pathname !== '/settings') return <Navigate to="/settings?change-password=1" replace />;
+  return user.organizationContext && user.role === 'student' ? <OrganizationLayout /> : <DashboardLayout />;
+};
+
+const StudentPortalLayout: React.FC = () => {
+  const { user } = useAuth();
+  return user?.organizationContext && user.role === 'student' ? <OrganizationLayout /> : <DashboardLayout />;
 };
 
 export default function App() {
   return (
     <Routes>
       {/* Landing/Hero Page */}
-      <Route path="/" element={<LandingPage />} />
+      <Route path="/" element={<TenantLandingPage />} />
 
       {/* Authentication Pages */}
       <Route
@@ -125,6 +141,15 @@ export default function App() {
       {/* Admin console (accounts created with `npm run admin`) */}
       <Route element={<ProtectedRoute requiredRole="admin" />}>
         <Route path="/admin" element={<AdminDashboardPage />} />
+        <Route path="/admin/organizations" element={<AdminOrganizationsPage />} />
+      </Route>
+
+      <Route element={<ProtectedRoute />}>
+        <Route element={<OrganizationLayout />}>
+          <Route path="/organization" element={<OrganizationPortalPage />} />
+          <Route path="/organization/manage" element={<OrganizationManagerPage />} />
+          <Route path="/organization/landing-page" element={<React.Suspense fallback={<div className="p-8 text-gray-500">Loading editor…</div>}><OrganizationLandingEditor /></React.Suspense>} />
+        </Route>
       </Route>
 
       {/* Public pages that render inside the dashboard shell when logged in, standalone otherwise */}
@@ -140,7 +165,7 @@ export default function App() {
 
       {/* Student App (students + instructors using student portal) */}
       <Route element={<ProtectedRoute />}>
-        <Route element={<DashboardLayout />}>
+        <Route element={<StudentPortalLayout />}>
           <Route path="/student-portal" element={<DashboardPage />} />
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/sanaweya" element={<SanaweyaPage />} />

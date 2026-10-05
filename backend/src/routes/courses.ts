@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { eq, and, ilike, sql, count, avg, inArray } from 'drizzle-orm';
+import { eq, and, ilike, sql, count, avg, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import {
@@ -10,6 +10,7 @@ import {
   enrollments,
   courseReviews,
   lessonResources,
+  orgMemberships,
 } from '../db/schema';
 import { requireAuth, requireRole } from '../middleware/requireAuth';
 import { enrollStudent } from '../lib/enrollment';
@@ -26,6 +27,17 @@ async function getOptionalUserId(req: Request): Promise<string | null> {
   return row?.user_id ?? null;
 }
 
+async function courseBelongsToRequestScope(req: Request, userId: string, courseId: string): Promise<boolean> {
+  const [course] = await db.select({ organizationId: courses.organizationId }).from(courses)
+    .where(eq(courses.id, courseId)).limit(1);
+    if (!course || (req.organization ? course.organizationId !== req.organization.id : course.organizationId !== null)) return false;
+  if (!req.organization) return true;
+  const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships).where(and(
+    eq(orgMemberships.orgId, req.organization.id), eq(orgMemberships.userId, userId), eq(orgMemberships.status, 'active')
+  )).limit(1);
+  return Boolean(membership);
+}
+
 router.get('/', async (req: Request, res: Response) => {
   try {
     const search = (req.query.search as string) || '';
@@ -36,7 +48,18 @@ router.get('/', async (req: Request, res: Response) => {
     const limit = Math.max(1, Number(req.query.limit) || 20);
     const offset = (page - 1) * limit;
 
-    const conditions = [eq(courses.isPublished, true)];
+    if (req.organization) {
+      const userId = await getOptionalUserId(req);
+      if (!userId) return res.status(401).json({ message: 'Sign in to access this organization.' });
+      const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships).where(and(
+        eq(orgMemberships.orgId, req.organization.id), eq(orgMemberships.userId, userId),
+        eq(orgMemberships.status, 'active')
+      )).limit(1);
+      if (!membership) return res.status(403).json({ message: 'Organization membership is required.' });
+    }
+
+    const conditions = [eq(courses.isPublished, true), eq(courses.approvalStatus, 'approved')];
+    conditions.push(req.organization ? eq(courses.organizationId, req.organization.id) : isNull(courses.organizationId));
     if (search) conditions.push(ilike(courses.title, `%${search}%`));
     if (category) conditions.push(eq(courses.category, category));
     if (level) conditions.push(eq(courses.level, level));
@@ -105,6 +128,11 @@ router.get('/', async (req: Request, res: Response) => {
         originalPrice: r.course.originalPrice ? Number(r.course.originalPrice) : null,
         duration: r.course.durationText,
         isPublished: r.course.isPublished,
+        deliveryMode: r.course.deliveryMode,
+        location: r.course.location,
+        bookingUrl: r.course.bookingUrl,
+        scheduleText: r.course.scheduleText,
+        capacity: r.course.capacity,
         instructor: {
           name: r.instructorName,
           avatar: r.instructorAvatar,
@@ -127,6 +155,14 @@ router.get('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const currentUserId = await getOptionalUserId(req);
+    if (req.organization) {
+      if (!currentUserId) return res.status(401).json({ message: 'Sign in to access this organization.' });
+      const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships).where(and(
+        eq(orgMemberships.orgId, req.organization.id), eq(orgMemberships.userId, currentUserId),
+        eq(orgMemberships.status, 'active')
+      )).limit(1);
+      if (!membership) return res.status(403).json({ message: 'Organization membership is required.' });
+    }
 
     const rows = await db
       .select({
@@ -136,7 +172,7 @@ router.get('/:id', async (req: Request, res: Response) => {
       })
       .from(courses)
       .innerJoin(users, eq(courses.instructorId, users.id))
-      .where(eq(courses.id, id))
+      .where(and(eq(courses.id, id), eq(courses.approvalStatus, 'approved')))
       .limit(1);
 
     if (rows.length === 0) {
@@ -145,6 +181,12 @@ router.get('/:id', async (req: Request, res: Response) => {
 
     const row = rows[0];
     const course = row.course;
+
+    if (course.approvalStatus !== 'approved' && currentUserId !== course.instructorId) return res.status(404).json({ message: 'Course not found' });
+
+    if ((req.organization && course.organizationId !== req.organization.id) || (!req.organization && course.organizationId)) {
+      return res.status(404).json({ message: 'Course not found' });
+    }
 
     const isInstructor = currentUserId === course.instructorId;
 
@@ -244,6 +286,10 @@ router.get('/:id', async (req: Request, res: Response) => {
         thumbnail: course.thumbnailUrl,
         category: course.category,
         level: course.level,
+        deliveryMode: course.deliveryMode,
+        location: course.location,
+        bookingUrl: course.bookingUrl,
+        scheduleText: course.scheduleText,
         price: Number(course.price),
         originalPrice: course.originalPrice ? Number(course.originalPrice) : null,
         duration: course.durationText,
@@ -300,6 +346,9 @@ router.post('/:id/reviews', requireAuth, async (req: Request, res: Response) => 
     }
 
     const studentId = req.user!.id;
+    if (!(await courseBelongsToRequestScope(req, studentId, courseId.data))) {
+      return res.status(404).json({ message: 'Course not found' });
+    }
     const enrollment = await db
       .select({ id: enrollments.id })
       .from(enrollments)
@@ -331,13 +380,17 @@ router.post('/:id/enroll', requireAuth, async (req: Request, res: Response) => {
     const { id } = req.params;
     const studentId = req.user!.id;
 
+    if (!(await courseBelongsToRequestScope(req, studentId, id))) return res.status(404).json({ message: 'Course not found' });
     const courseRows = await db.select().from(courses).where(eq(courses.id, id)).limit(1);
     // Drafts and unpublished courses can't take new enrollments.
-    if (courseRows.length === 0 || !courseRows[0].isPublished) {
+    if (courseRows.length === 0 || !courseRows[0].isPublished || courseRows[0].approvalStatus !== 'approved') {
       return res.status(404).json({ message: 'Course not found' });
     }
 
     const course = courseRows[0];
+    if (course.deliveryMode === 'offline') {
+      return res.status(400).json({ message: 'Offline courses are booking only and cannot be enrolled in online.' });
+    }
 
     const existing = await db
       .select()
@@ -421,6 +474,8 @@ router.get(
     try {
       const { courseId, lessonId } = req.params;
       const userId = req.user!.id;
+
+      if (!(await courseBelongsToRequestScope(req, userId, courseId))) return res.status(404).json({ message: 'Course not found' });
 
       const lessonRows = await db
         .select()

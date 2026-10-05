@@ -7,6 +7,7 @@ export const ResetPasswordPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const token = searchParams.get('token') ?? '';
+  const isSetup = searchParams.get('setup') === '1';
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -57,10 +58,9 @@ export const ResetPasswordPage: React.FC = () => {
         ) : (
           <>
             <div className="text-center space-y-1">
-              <h1 className="text-xl sm:text-2xl font-black text-[#1B1B1B]">Choose a new password</h1>
+              <h1 className="text-xl sm:text-2xl font-black text-[#1B1B1B]">{isSetup ? 'Create your instructor password' : 'Choose a new password'}</h1>
               <p className="text-xs text-[#6B7280]">
-                At least 8 characters with upper and lower case letters and a number. You'll be signed out on other
-                devices.
+                At least 8 characters with upper and lower case letters and a number. {isSetup ? 'After setting this password, sign in once; Nudra will require one final password change before opening your instructor account.' : "You'll be signed out on other devices."}
               </p>
             </div>
 
@@ -104,7 +104,7 @@ export const ResetPasswordPage: React.FC = () => {
                 disabled={isSubmitting}
                 className="w-full py-3 px-4 rounded-xl bg-[#2D6A4F] hover:bg-[#23533e] text-white text-xs sm:text-sm font-bold shadow-sm transition-all flex items-center justify-center gap-2 disabled:opacity-60"
               >
-                <span>{isSubmitting ? 'Saving...' : 'Set new password'}</span>
+                <span>{isSubmitting ? 'Saving...' : isSetup ? 'Create password' : 'Set new password'}</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
             </form>

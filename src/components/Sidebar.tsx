@@ -8,8 +8,6 @@ import {
   Sparkles,
   BarChart3,
   ClipboardList,
-  Settings,
-  HelpCircle,
   X,
   ExternalLink,
   GraduationCap
@@ -18,7 +16,6 @@ import { useQuery } from '@tanstack/react-query';
 import api from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { ProfileMenu } from './ProfileMenu';
-import { AccountActions } from './AccountActions';
 
 interface SidebarProps {
   isOpen: boolean;
@@ -36,11 +33,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
     { name: 'AI Tutor', path: '/ai-tutor', icon: Sparkles, badge: 'New' },
     { name: 'Progress', path: '/progress', icon: BarChart3 },
     { name: 'Exam Simulator', path: '/exam-simulator', icon: ClipboardList },
-  ];
-
-  const generalItems = [
-    { name: 'Settings', path: '/settings', icon: Settings },
-    { name: 'Help', path: '/help', icon: HelpCircle },
   ];
 
   const { data: sanaweyaProfile } = useQuery({
@@ -158,50 +150,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
             </nav>
           </div>
 
-          {/* Section: General */}
-          <div>
-            <p className="px-3 text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-              General
-            </p>
-            <nav className="space-y-1">
-              {generalItems.map((item) => {
-                const Icon = item.icon;
-                return (
-                  <NavLink
-                    key={item.path}
-                    to={item.path}
-                    onClick={() => {
-                      if (window.innerWidth < 1024) onClose();
-                    }}
-                    className={({ isActive }) =>
-                      `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-all duration-150 ${
-                        isActive
-                          ? 'bg-[#2D6A4F] text-white shadow-sm'
-                          : 'text-gray-600 hover:text-[#1B1B1B] hover:bg-gray-50'
-                      }`
-                    }
-                  >
-                    {({ isActive }) => (
-                      <>
-                        <Icon
-                          className={`w-5 h-5 ${
-                            isActive ? 'text-white' : 'text-gray-500'
-                          }`}
-                        />
-                        <span>{item.name}</span>
-                      </>
-                    )}
-                  </NavLink>
-                );
-              })}
-            </nav>
-          </div>
         </div>
 
         {/* Bottom Section: User Profile Menu (dropdown) & Instructor Studio */}
         <div className="space-y-2 pt-4 border-t border-gray-100">
-          <ProfileMenu showName align="left" openUp />
-          <AccountActions onAction={onClose} />
+          <ProfileMenu showName align="left" openUp onNavigate={onClose} />
 
           {user?.role === 'instructor' && (
             <Link

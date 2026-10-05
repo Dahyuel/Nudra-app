@@ -5,6 +5,10 @@ export interface CourseLesson {
   id: string;
   title: string;
   duration: string | null;
+  deliveryMode: 'online' | 'offline';
+  location: string | null;
+  bookingUrl: string | null;
+  scheduleText: string | null;
   isFree: boolean;
   position: number;
   videoUrl: string | null;
@@ -39,6 +43,10 @@ export interface CourseDetail {
   price: number;
   originalPrice: number | null;
   duration: string | null;
+  deliveryMode: 'online' | 'offline';
+  location: string | null;
+  bookingUrl: string | null;
+  scheduleText: string | null;
   createdAt: string;
   updatedAt: string;
   instructor: { id: string; name: string; avatar: string | null };

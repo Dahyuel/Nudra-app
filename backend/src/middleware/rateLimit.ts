@@ -1,16 +1,58 @@
 import { Request, Response, NextFunction } from 'express';
 import Redis from 'ioredis';
+import type { Options, Store, ClientRateLimitInfo } from 'express-rate-limit';
+import { getRedisUrl } from '../lib/redisConnection';
 
-const REDIS_URL: string = process.env.REDIS_URL || 'redis://localhost:6379';
-
-const redis = new Redis(REDIS_URL, {
-  maxRetriesPerRequest: null,
-  lazyConnect: false,
+const redis = new Redis(getRedisUrl(), {
+  maxRetriesPerRequest: 1,
+  enableOfflineQueue: false,
+  connectTimeout: 2500,
+  lazyConnect: true,
+  retryStrategy: () => 1000,
 });
 
 redis.on('error', (err) => {
   console.warn('rate limit redis error', err);
 });
+
+const INCREMENT_SCRIPT = `
+local total = redis.call('INCR', KEYS[1])
+if total == 1 then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end
+local ttl = redis.call('PTTL', KEYS[1])
+return { total, ttl }
+`;
+
+const DECREMENT_SCRIPT = `
+local total = tonumber(redis.call('GET', KEYS[1]) or '0')
+if total <= 1 then return redis.call('DEL', KEYS[1]) end
+return redis.call('DECR', KEYS[1])
+`;
+
+/** Fixed-window store backed by the VPS's private Redis instance. */
+export function createRedisRateLimitStore(prefix: string): Store {
+  let windowMs = 60_000;
+  const keyFor = (key: string) => `${prefix}:${key}`;
+
+  return {
+    prefix,
+    localKeys: false,
+    init(options: Options) {
+      windowMs = options.windowMs;
+    },
+    async increment(key: string): Promise<ClientRateLimitInfo> {
+      const result = await redis.eval(INCREMENT_SCRIPT, 1, keyFor(key), String(windowMs)) as [number | string, number | string];
+      const totalHits = Number(result[0]);
+      const ttl = Number(result[1]);
+      return { totalHits, resetTime: new Date(Date.now() + Math.max(ttl, 0)) };
+    },
+    async decrement(key: string): Promise<void> {
+      await redis.eval(DECREMENT_SCRIPT, 1, keyFor(key));
+    },
+    async resetKey(key: string): Promise<void> {
+      await redis.del(keyFor(key));
+    },
+  };
+}
 
 interface RateLimiterOptions {
   keyPrefix: string;

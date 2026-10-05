@@ -8,7 +8,6 @@ import {
   DollarSign,
   TrendingUp,
   GraduationCap,
-  LogOut,
   Bell,
   Search,
   Menu,
@@ -18,7 +17,6 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { ProfileMenu } from '../components/ProfileMenu';
-import { AccountActions } from '../components/AccountActions';
 
 const getInitials = (name?: string) => {
   if (!name) return '?';
@@ -85,7 +83,7 @@ export const InstructorLayout: React.FC = () => {
         {/* Bottom Switcher: Return to Student Portal */}
         <div className="space-y-3 pt-6 border-t border-gray-100">
           <Link
-            to="/dashboard"
+            to={user?.organizationContext ? `/organization?org=${encodeURIComponent(user.organizationContext.slug)}` : '/dashboard'}
             className="flex items-center justify-between p-3 rounded-xl bg-emerald-50 text-[#2D6A4F] text-xs font-bold hover:bg-emerald-100/70 transition-colors"
           >
             <div className="flex items-center gap-2">
@@ -97,7 +95,6 @@ export const InstructorLayout: React.FC = () => {
 
           {/* Instructor Profile menu (opens upward: it sits at the bottom of the sidebar) */}
           <ProfileMenu showName align="left" openUp />
-          <AccountActions />
         </div>
       </aside>
 
@@ -197,7 +194,7 @@ export const InstructorLayout: React.FC = () => {
                 <span>Back to Student Portal</span>
                 <ExternalLink className="w-3.5 h-3.5" />
               </Link>
-              <AccountActions onAction={() => setMobileMenuOpen(false)} />
+              <ProfileMenu showName align="left" openUp onNavigate={() => setMobileMenuOpen(false)} />
             </div>
           </div>
         </div>

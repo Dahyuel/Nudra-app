@@ -153,7 +153,7 @@ python -m app.main                        # listens on http://localhost:4981
 
 ### One-command alternative
 
-`./start.sh` starts the DeepSeek proxy, backend, and frontend in the background and tails the backend log. Stop everything with `./stop.sh`.
+`./start.sh` starts the backend and frontend in the background after checking `backend/.env` and its configured PostgreSQL connection (`DATABASE_URL`). It does not start local infrastructure, push the schema, or seed the database. Stop the two app services with `./stop.sh`; logs are written to `.logs/`.
 
 ### Health check
 

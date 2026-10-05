@@ -1,10 +1,18 @@
 import { Router, Request, Response } from 'express';
+import express from 'express';
 import multer from 'multer';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
-import os from 'os';
-import fs from 'fs/promises';
-import { eq, and, count, avg, sum, inArray, sql, desc } from 'drizzle-orm';
+import { eq, and, count, avg, sum, inArray, sql, desc, isNull, gt, lt } from 'drizzle-orm';
+import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand,
+  HeadObjectCommand,
+  ListPartsCommand,
+  type ListPartsCommandOutput,
+  UploadPartCommand,
+} from '@aws-sdk/client-s3';
 import { db } from '../db';
 import {
   courses,
@@ -13,6 +21,7 @@ import {
   enrollments,
   courseReviews,
   videoJobs,
+  videoUploadSessions,
   quizzes,
   quizQuestions,
   quizAttempts,
@@ -21,20 +30,29 @@ import {
   communityPosts,
   communityReplies,
   orders,
+  orgMemberships,
 } from '../db/schema';
 import { requireAuth, requireRole } from '../middleware/requireAuth';
 import {
+  r2Client,
   minioClient,
   THUMBNAIL_BUCKET,
   RAW_VIDEO_BUCKET,
   HLS_BUCKET,
   getThumbnailUrl,
   listRawVideoKeys,
+  storage,
 } from '../lib/minio';
 import { videoQueue } from '../lib/queue';
 import { chatCompletion } from '../lib/deepseek';
 
 const router = Router();
+
+const courseScope = (req: Request) => req.organization
+  ? eq(courses.organizationId, req.organization.id)
+  : isNull(courses.organizationId);
+const courseById = (req: Request, id: string) => and(eq(courses.id, id), courseScope(req));
+const instructorCourses = (req: Request, instructorId: string) => and(eq(courses.instructorId, instructorId), courseScope(req));
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -50,6 +68,25 @@ const upload = multer({
 });
 
 const ALLOWED_VIDEO_EXT = ['mp4', 'mov', 'mkv', 'webm', 'avi'];
+const VIDEO_PART_SIZE = 8 * 1024 * 1024;
+const MAX_VIDEO_SIZE = 2 * 1024 * 1024 * 1024;
+
+// S3 multipart uploads do not disappear when a browser closes. Expire and
+// abort abandoned sessions so incomplete parts cannot consume disk forever.
+const multipartCleanupTimer = setInterval(() => {
+  void db.select().from(videoUploadSessions).where(and(
+    lt(videoUploadSessions.expiresAt, new Date()),
+    eq(videoUploadSessions.status, 'uploading'),
+  )).then(async (expired) => {
+    for (const session of expired) {
+      await minioClient.send(new AbortMultipartUploadCommand({
+        Bucket: RAW_VIDEO_BUCKET, Key: session.storageKey, UploadId: session.multipartUploadId,
+      })).catch(() => {});
+      await db.delete(videoUploadSessions).where(eq(videoUploadSessions.id, session.id));
+    }
+  }).catch((error) => console.error('expired multipart upload cleanup failed', error));
+}, 60 * 60 * 1000);
+multipartCleanupTimer.unref();
 
 const urlSchema = z.string().url().max(2048).optional().nullable();
 
@@ -64,6 +101,11 @@ const courseBodySchema = z.object({
   original_price: z.union([z.number().min(0).max(999999), z.string()]).optional().nullable(),
   duration_text: z.string().max(255).optional().nullable(),
   thumbnail_url: urlSchema,
+  delivery_mode: z.enum(['online', 'offline']).optional(),
+  location: z.string().max(1000).optional().nullable(),
+  booking_url: urlSchema,
+  schedule_text: z.string().max(2000).optional().nullable(),
+  capacity: z.number().int().min(1).max(100000).optional().nullable(),
 });
 
 // `id` is sent for sections/lessons that already exist so they are updated in
@@ -96,23 +138,16 @@ function sanitizeUrl(url: string | null | undefined): string | null {
   }
 }
 
-const videoUpload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, os.tmpdir()),
-    filename: (_req, file, cb) => cb(null, `${randomUUID()}-${file.originalname}`),
-  }),
-  limits: { fileSize: 2 * 1024 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => {
-    const ext = file.originalname.split('.').pop()?.toLowerCase() || '';
-    if (ALLOWED_VIDEO_EXT.includes(ext)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only mp4, mov, mkv, webm, avi video files are allowed'));
-    }
-  },
-});
-
 router.use(requireAuth, requireRole('instructor'));
+router.use(async (req, res, next) => {
+  if (!req.organization) return next();
+  const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships).where(and(
+    eq(orgMemberships.orgId, req.organization.id), eq(orgMemberships.userId, req.user!.id),
+    eq(orgMemberships.role, 'instructor'), eq(orgMemberships.status, 'active')
+  )).limit(1);
+  if (!membership) return res.status(403).json({ message: 'Active instructor membership in this organization is required.' });
+  return next();
+});
 
 router.get('/courses', async (req: Request, res: Response) => {
   try {
@@ -121,7 +156,9 @@ router.get('/courses', async (req: Request, res: Response) => {
     const rows = await db
       .select()
       .from(courses)
-      .where(eq(courses.instructorId, instructorId))
+      .where(and(eq(courses.instructorId, instructorId), req.organization
+        ? eq(courses.organizationId, req.organization.id)
+        : isNull(courses.organizationId)))
       .orderBy(courses.createdAt);
 
     const ids = rows.map((r) => r.id);
@@ -176,6 +213,9 @@ router.get('/courses', async (req: Request, res: Response) => {
         originalPrice: c.originalPrice ? Number(c.originalPrice) : null,
         duration: c.durationText,
         isPublished: c.isPublished,
+        approvalStatus: c.approvalStatus,
+        deliveryMode: c.deliveryMode,
+        location: c.location,
         createdAt: c.createdAt,
         updatedAt: c.updatedAt,
         enrollmentCount,
@@ -199,7 +239,7 @@ router.get('/courses/:id', async (req: Request, res: Response) => {
     const id = z.string().uuid().safeParse(req.params.id);
     if (!id.success) return res.status(400).json({ message: 'Invalid course id' });
 
-    const rows = await db.select().from(courses).where(eq(courses.id, id.data)).limit(1);
+    const rows = await db.select().from(courses).where(courseById(req, id.data)).limit(1);
     if (rows.length === 0) return res.status(404).json({ message: 'Course not found' });
     if (rows[0].instructorId !== instructorId) return res.status(403).json({ message: 'Forbidden' });
 
@@ -253,6 +293,9 @@ router.post('/courses', async (req: Request, res: Response) => {
     if (!parsed.success) {
       return res.status(400).json({ message: 'Invalid course data', errors: parsed.error.flatten() });
     }
+    if ((parsed.data.delivery_mode ?? 'online') === 'offline' && (!parsed.data.location || !parsed.data.schedule_text || !parsed.data.booking_url)) {
+      return res.status(400).json({ message: 'Offline courses need a location, schedule, and booking page URL.' });
+    }
 
     const {
       title,
@@ -265,12 +308,19 @@ router.post('/courses', async (req: Request, res: Response) => {
       original_price,
       duration_text,
       thumbnail_url,
+      delivery_mode,
+      location,
+      booking_url,
+      schedule_text,
+      capacity,
     } = parsed.data;
 
+    const courseMode = delivery_mode ?? 'online';
     const inserted = await db
       .insert(courses)
       .values({
         instructorId,
+        organizationId: req.organization?.id ?? null,
         title,
         titleAr: title_ar ?? null,
         subtitle: subtitle ?? null,
@@ -278,10 +328,16 @@ router.post('/courses', async (req: Request, res: Response) => {
         thumbnailUrl: sanitizeUrl(thumbnail_url),
         category,
         level,
-        price: price != null ? String(price) : '0',
+        price: courseMode === 'offline' ? '0' : price != null ? String(price) : '0',
         originalPrice: original_price != null ? String(original_price) : null,
         durationText: duration_text ?? null,
         isPublished: false,
+        deliveryMode: courseMode,
+        approvalStatus: req.organization ? 'pending' : 'approved',
+        location: location ?? null,
+        bookingUrl: booking_url ?? null,
+        scheduleText: schedule_text ?? null,
+        capacity: capacity ?? null,
       })
       .returning();
 
@@ -297,12 +353,17 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
     const instructorId = req.user!.id;
     const { id } = req.params;
 
-    const existing = await db.select().from(courses).where(eq(courses.id, id)).limit(1);
+    const existing = await db.select().from(courses).where(courseById(req, id)).limit(1);
     if (existing.length === 0) {
       return res.status(404).json({ message: 'Course not found' });
     }
     if (existing[0].instructorId !== instructorId) {
       return res.status(403).json({ message: 'Forbidden' });
+    }
+    const willChangeLiveCourse = req.organization && existing[0].approvalStatus === 'approved' && existing[0].isPublished && Object.keys(req.body ?? {}).some((key) => key !== 'sections');
+    if (willChangeLiveCourse) {
+      // Changes to a live organization course return it to manager review.
+      await db.update(courses).set({ isPublished: false, approvalStatus: 'pending', updatedAt: new Date() }).where(eq(courses.id, id));
     }
 
     const parsed = courseBodySchema
@@ -311,6 +372,9 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
 
     if (!parsed.success) {
       return res.status(400).json({ message: 'Invalid course data', errors: parsed.error.flatten() });
+    }
+    if (parsed.data.delivery_mode === 'offline' && (!parsed.data.location || !parsed.data.schedule_text || !parsed.data.booking_url)) {
+      return res.status(400).json({ message: 'Offline courses need a location, schedule, and booking page URL.' });
     }
 
     const {
@@ -324,6 +388,11 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
       original_price,
       duration_text,
       thumbnail_url,
+      delivery_mode,
+      location,
+      booking_url,
+      schedule_text,
+      capacity,
       sections,
     } = parsed.data;
 
@@ -339,9 +408,19 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
       updateValues.originalPrice = original_price != null ? String(original_price) : null;
     if (duration_text !== undefined) updateValues.durationText = duration_text;
     if (thumbnail_url !== undefined) updateValues.thumbnailUrl = sanitizeUrl(thumbnail_url);
+    if (delivery_mode !== undefined) updateValues.deliveryMode = delivery_mode;
+    if (location !== undefined) updateValues.location = location;
+    if (booking_url !== undefined) updateValues.bookingUrl = booking_url;
+    if (schedule_text !== undefined) updateValues.scheduleText = schedule_text;
+    if (capacity !== undefined) updateValues.capacity = capacity;
+    if (delivery_mode === 'offline') updateValues.price = '0';
+    if (req.organization && (existing[0].approvalStatus !== 'approved' || willChangeLiveCourse)) {
+      updateValues.approvalStatus = 'pending';
+      updateValues.isPublished = false;
+    }
 
     await db.transaction(async (tx) => {
-      await tx.update(courses).set(updateValues).where(eq(courses.id, id));
+      await tx.update(courses).set(updateValues).where(courseById(req, id));
 
       if (Array.isArray(sections)) {
         // Sync the curriculum instead of deleting and re-inserting it: deleting a
@@ -423,7 +502,7 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
       }
     });
 
-    const updatedCourse = await db.select().from(courses).where(eq(courses.id, id)).limit(1);
+    const updatedCourse = await db.select().from(courses).where(courseById(req, id)).limit(1);
     const sectionRows = await db
       .select()
       .from(courseSections)
@@ -454,18 +533,24 @@ router.post('/courses/:id/publish', async (req: Request, res: Response) => {
     const instructorId = req.user!.id;
     const { id } = req.params;
 
-    const existing = await db.select().from(courses).where(eq(courses.id, id)).limit(1);
+    const existing = await db.select().from(courses).where(courseById(req, id)).limit(1);
     if (existing.length === 0) {
       return res.status(404).json({ message: 'Course not found' });
     }
     if (existing[0].instructorId !== instructorId) {
       return res.status(403).json({ message: 'Forbidden' });
     }
+    if (existing[0].organizationId) {
+      return res.status(409).json({ message: 'Organization courses must be submitted for manager review before publication.' });
+    }
+    if (existing[0].organizationId && existing[0].approvalStatus !== 'approved') {
+      return res.status(409).json({ message: 'This course must be approved by the organization manager before it can be published.' });
+    }
 
     const updated = await db
       .update(courses)
       .set({ isPublished: true, updatedAt: new Date() })
-      .where(eq(courses.id, id))
+      .where(courseById(req, id))
       .returning();
 
     return res.json({ course: updated[0] });
@@ -481,7 +566,7 @@ async function loadOwnedCourse(req: Request, res: Response) {
     res.status(400).json({ message: 'Invalid course id' });
     return null;
   }
-  const rows = await db.select().from(courses).where(eq(courses.id, id.data)).limit(1);
+  const rows = await db.select().from(courses).where(courseById(req, id.data)).limit(1);
   if (rows.length === 0) {
     res.status(404).json({ message: 'Course not found' });
     return null;
@@ -501,7 +586,7 @@ router.post('/courses/:id/unpublish', async (req: Request, res: Response) => {
     const [updated] = await db
       .update(courses)
       .set({ isPublished: false, updatedAt: new Date() })
-      .where(eq(courses.id, course.id))
+      .where(courseById(req, course.id))
       .returning();
     return res.json({ course: updated });
   } catch (err) {
@@ -533,20 +618,20 @@ router.delete('/courses/:id', async (req: Request, res: Response) => {
       await db.select({ id: lessons.id }).from(lessons).where(eq(lessons.courseId, course.id))
     ).map((l) => l.id);
 
-    await db.delete(courses).where(eq(courses.id, course.id));
+    await db.delete(courses).where(courseById(req, course.id));
 
     // Storage isn't covered by the database cascade: remove each lesson's raw
     // upload and HLS files. Failures are logged but don't undo the delete.
     for (const lessonId of lessonIds) {
       try {
-        for (const key of await listRawVideoKeys(lessonId)) await minioClient.removeObject(RAW_VIDEO_BUCKET, key);
+        for (const key of await listRawVideoKeys(lessonId)) await storage.removeObject(RAW_VIDEO_BUCKET, key);
         const hlsKeys: string[] = [];
-        for await (const obj of minioClient.listObjectsV2(HLS_BUCKET, `lessons/${lessonId}/`, true) as AsyncIterable<{
+        for await (const obj of storage.listObjectsV2(HLS_BUCKET, `lessons/${lessonId}/`, true) as AsyncIterable<{
           name?: string;
         }>) {
           if (obj.name) hlsKeys.push(obj.name);
         }
-        for (const key of hlsKeys) await minioClient.removeObject(HLS_BUCKET, key);
+        for (const key of hlsKeys) await storage.removeObject(HLS_BUCKET, key);
       } catch (storageErr) {
         console.warn(`failed to remove stored video files for lesson ${lessonId}`, storageErr);
       }
@@ -568,7 +653,7 @@ router.post('/upload/thumbnail', upload.single('thumbnail'), async (req: Request
     const ext = req.file.originalname.split('.').pop() || 'jpg';
     const objectName = `${randomUUID()}.${ext}`;
 
-    await minioClient.putObject(
+    await storage.putObject(
       THUMBNAIL_BUCKET,
       objectName,
       req.file.buffer,
@@ -584,90 +669,181 @@ router.post('/upload/thumbnail', upload.single('thumbnail'), async (req: Request
   }
 });
 
-router.post(
-  '/lessons/:lessonId/upload-video',
-  (req, res, next) => {
-    videoUpload.single('video')(req, res, (err: any) => {
-      if (err) {
-        return res.status(400).json({ message: err.message || 'Video upload failed' });
-      }
-      next();
+async function getOwnedLesson(lessonId: string, req: Request) {
+  const [row] = await db.select({ lesson: lessons, course: courses }).from(lessons)
+    .innerJoin(courses, eq(lessons.courseId, courses.id))
+    .where(and(eq(lessons.id, lessonId), eq(courses.instructorId, req.user!.id), courseScope(req))).limit(1);
+  return row;
+}
+
+async function getOwnedUpload(lessonId: string, uploadId: string, req: Request) {
+  const [session] = await db.select().from(videoUploadSessions).where(and(
+    eq(videoUploadSessions.id, uploadId), eq(videoUploadSessions.lessonId, lessonId),
+    eq(videoUploadSessions.instructorId, req.user!.id), gt(videoUploadSessions.expiresAt, new Date())
+  )).limit(1);
+  return session;
+}
+
+router.post('/lessons/:lessonId/video-uploads', async (req: Request, res: Response) => {
+  const parsed = z.object({
+    fileName: z.string().trim().min(1).max(255),
+    fileSize: z.number().int().positive().max(MAX_VIDEO_SIZE),
+    contentType: z.string().trim().max(120).optional(),
+  }).strict().safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ message: 'Choose a supported video file up to 2 GiB.' });
+  const lessonId = req.params.lessonId;
+  const lesson = await getOwnedLesson(lessonId, req);
+  if (!lesson) return res.status(404).json({ message: 'Lesson not found.' });
+
+  const [activeUploadCount] = await db.select({ count: count() }).from(videoUploadSessions).where(and(
+    eq(videoUploadSessions.instructorId, req.user!.id),
+    eq(videoUploadSessions.status, 'uploading'),
+    gt(videoUploadSessions.expiresAt, new Date()),
+  ));
+  if (Number(activeUploadCount?.count || 0) >= 2) {
+    return res.status(429).json({ message: 'You already have two active video uploads. Finish or cancel one before starting another.' });
+  }
+
+  const safeName = parsed.data.fileName.split(/[\\/]/).pop() || '';
+  const extension = safeName.split('.').pop()?.toLowerCase() || '';
+  if (!ALLOWED_VIDEO_EXT.includes(extension)) {
+    return res.status(400).json({ message: 'Only MP4, MOV, MKV, WebM, and AVI videos are supported.' });
+  }
+  const contentType = parsed.data.contentType || 'application/octet-stream';
+  if (!contentType.startsWith('video/') && contentType !== 'application/octet-stream') {
+    return res.status(400).json({ message: 'The selected file must be a video.' });
+  }
+
+  const storageKey = `lessons/raw/${lessonId}/${randomUUID()}.${extension}`;
+  let multipartUploadId: string | undefined;
+  try {
+    const created = await minioClient.send(new CreateMultipartUploadCommand({
+      Bucket: RAW_VIDEO_BUCKET, Key: storageKey, ContentType: contentType,
+    }));
+    multipartUploadId = created.UploadId;
+    if (!multipartUploadId) throw new Error('Object storage did not return a multipart upload id.');
+    const [session] = await db.insert(videoUploadSessions).values({
+      lessonId, instructorId: req.user!.id, storageKey, multipartUploadId,
+      fileName: safeName, contentType, fileSize: parsed.data.fileSize,
+      partSize: VIDEO_PART_SIZE, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+    }).returning();
+    return res.status(201).json({
+      uploadId: session.id, partSize: VIDEO_PART_SIZE,
+      totalParts: Math.ceil(session.fileSize / VIDEO_PART_SIZE), expiresAt: session.expiresAt,
     });
-  },
+  } catch (err) {
+    if (multipartUploadId) await minioClient.send(new AbortMultipartUploadCommand({
+      Bucket: RAW_VIDEO_BUCKET, Key: storageKey, UploadId: multipartUploadId,
+    })).catch(() => {});
+    console.error('video multipart initialization failed', err);
+    return res.status(503).json({ message: 'Could not start the video upload. Please try again.' });
+  }
+});
+
+router.put(
+  '/lessons/:lessonId/video-uploads/:uploadId/parts/:partNumber',
+  express.raw({ type: 'application/octet-stream', limit: VIDEO_PART_SIZE, inflate: false }),
   async (req: Request, res: Response) => {
-    const file = req.file;
+    const lessonId = req.params.lessonId;
+    const session = await getOwnedUpload(lessonId, req.params.uploadId, req);
+    if (!session || session.status !== 'uploading') return res.status(404).json({ message: 'Upload session not found or expired.' });
+    if (!(await getOwnedLesson(lessonId, req))) return res.status(404).json({ message: 'Lesson not found.' });
+    const partNumber = Number(req.params.partNumber);
+    const totalParts = Math.ceil(session.fileSize / session.partSize);
+    if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > totalParts) {
+      return res.status(400).json({ message: 'Invalid video part number.' });
+    }
+    if (!Buffer.isBuffer(req.body)) return res.status(400).json({ message: 'Send this part as application/octet-stream.' });
+    const expectedSize = partNumber === totalParts
+      ? session.fileSize - session.partSize * (totalParts - 1)
+      : session.partSize;
+    if (req.body.length !== expectedSize) return res.status(400).json({ message: 'Video part size does not match the upload session.' });
     try {
-      const instructorId = req.user!.id;
-      const { lessonId } = req.params;
-
-      if (!file) {
-        return res.status(400).json({ message: 'No video file provided' });
-      }
-
-      const lessonRows = await db
-        .select({
-          lesson: lessons,
-          course: courses,
-        })
-        .from(lessons)
-        .innerJoin(courses, eq(lessons.courseId, courses.id))
-        .where(eq(lessons.id, lessonId))
-        .limit(1);
-
-      if (lessonRows.length === 0) {
-        await fs.unlink(file.path).catch(() => {});
-        return res.status(404).json({ message: 'Lesson not found' });
-      }
-      if (lessonRows[0].course.instructorId !== instructorId) {
-        await fs.unlink(file.path).catch(() => {});
-        return res.status(403).json({ message: 'Forbidden' });
-      }
-
-      const safeExt = (file.originalname.split('.').pop() || '').toLowerCase();
-      const minioKey = `lessons/raw/${lessonId}/${randomUUID()}.${safeExt}`;
-      const fileBuffer = await fs.readFile(file.path);
-
-      await minioClient.putObject(RAW_VIDEO_BUCKET, minioKey, fileBuffer, fileBuffer.length, {
-        'Content-Type': file.mimetype,
-      });
-
-      await fs.unlink(file.path).catch(() => {});
-
-      const existing = await db
-        .select()
-        .from(videoJobs)
-        .where(eq(videoJobs.lessonId, lessonId))
-        .limit(1);
-
-      let jobRow;
-      if (existing.length > 0) {
-        const rows = await db
-          .update(videoJobs)
-          .set({ status: 'pending', errorMsg: null, updatedAt: new Date() })
-          .where(eq(videoJobs.lessonId, lessonId))
-          .returning();
-        jobRow = rows[0];
-      } else {
-        const rows = await db
-          .insert(videoJobs)
-          .values({ lessonId, status: 'pending' })
-          .returning();
-        jobRow = rows[0];
-      }
-
-      const job = await videoQueue.add('transcode', { lessonId, minioKey });
-
-      return res.status(202).json({
-        message: 'Video upload received, transcoding started',
-        jobId: job.id,
-      });
+      const uploaded = await minioClient.send(new UploadPartCommand({
+        Bucket: RAW_VIDEO_BUCKET, Key: session.storageKey,
+        UploadId: session.multipartUploadId, PartNumber: partNumber, Body: req.body,
+      }));
+      if (!uploaded.ETag) throw new Error('Object storage did not return the part checksum.');
+      return res.json({ partNumber, etag: uploaded.ETag });
     } catch (err) {
-      if (file) await fs.unlink(file.path).catch(() => {});
-      console.error('video upload error', err);
-      return res.status(500).json({ message: 'Internal server error' });
+      console.error('video multipart part failed', { lessonId, partNumber, err });
+      return res.status(502).json({ message: 'This video part could not be saved. Retry this part.' });
     }
   }
 );
+
+router.post('/lessons/:lessonId/video-uploads/:uploadId/complete', async (req: Request, res: Response) => {
+  const lessonId = req.params.lessonId;
+  const session = await getOwnedUpload(lessonId, req.params.uploadId, req);
+    if (!session) return res.status(404).json({ message: 'Upload session not found or expired.' });
+    if (!(await getOwnedLesson(lessonId, req))) return res.status(404).json({ message: 'Lesson not found.' });
+    try {
+    if (session.status === 'uploading') {
+      let objectAlreadyCompleted = false;
+      let listed: ListPartsCommandOutput | undefined;
+      try {
+        listed = await minioClient.send(new ListPartsCommand({
+          Bucket: RAW_VIDEO_BUCKET, Key: session.storageKey, UploadId: session.multipartUploadId,
+        }));
+      } catch (error) {
+        // The object may have completed on a previous attempt whose response
+        // or following database write failed. Only treat it as complete when
+        // MinIO confirms that the final object exists.
+        objectAlreadyCompleted = await minioClient.send(new HeadObjectCommand({
+          Bucket: RAW_VIDEO_BUCKET, Key: session.storageKey,
+        })).then(() => true).catch(() => false);
+        if (!objectAlreadyCompleted) throw error;
+      }
+      if (!objectAlreadyCompleted && listed) {
+        const parts = (listed.Parts ?? []).filter((part) => part.PartNumber && part.ETag)
+          .sort((a, b) => (a.PartNumber ?? 0) - (b.PartNumber ?? 0));
+        const totalParts = Math.ceil(session.fileSize / session.partSize);
+        if (parts.length !== totalParts || parts.some((part, index) => {
+          const expectedSize = index === totalParts - 1
+            ? session.fileSize - session.partSize * index
+            : session.partSize;
+          return part.PartNumber !== index + 1 || part.Size !== expectedSize;
+        })) return res.status(409).json({ message: 'Some video parts are missing. Retry them before completing the upload.' });
+        await minioClient.send(new CompleteMultipartUploadCommand({
+          Bucket: RAW_VIDEO_BUCKET, Key: session.storageKey, UploadId: session.multipartUploadId,
+          MultipartUpload: { Parts: parts.map((part) => ({ PartNumber: part.PartNumber, ETag: part.ETag })) },
+        })).catch(async (error: unknown) => {
+          // Handle an ambiguous completion response safely and idempotently.
+          if (await minioClient.send(new HeadObjectCommand({ Bucket: RAW_VIDEO_BUCKET, Key: session.storageKey })).then(() => true).catch(() => false)) return;
+          throw error;
+        });
+      }
+      await db.update(videoUploadSessions).set({ status: 'completed' }).where(eq(videoUploadSessions.id, session.id));
+    }
+
+    const [existing] = await db.select({ id: videoJobs.id }).from(videoJobs).where(eq(videoJobs.lessonId, lessonId)).limit(1);
+    if (existing) {
+      await db.update(videoJobs).set({ status: 'pending', errorMsg: null, updatedAt: new Date() }).where(eq(videoJobs.lessonId, lessonId));
+    } else {
+      await db.insert(videoJobs).values({ lessonId, status: 'pending' });
+    }
+    const job = await videoQueue.add('transcode', { lessonId, minioKey: session.storageKey }, { jobId: session.id });
+    await db.delete(videoUploadSessions).where(eq(videoUploadSessions.id, session.id));
+    return res.status(202).json({ message: 'Video upload received, transcoding started.', jobId: job.id });
+  } catch (err) {
+    console.error('video multipart completion failed', { lessonId, uploadId: session.id, err });
+    return res.status(502).json({ message: 'The upload is saved, but processing could not be queued. Retry completing this upload.' });
+  }
+});
+
+router.delete('/lessons/:lessonId/video-uploads/:uploadId', async (req: Request, res: Response) => {
+  const lessonId = req.params.lessonId;
+  const session = await getOwnedUpload(lessonId, req.params.uploadId, req);
+  if (!session) return res.status(404).json({ message: 'Upload session not found or expired.' });
+  if (!(await getOwnedLesson(lessonId, req))) return res.status(404).json({ message: 'Lesson not found.' });
+  if (session.status === 'uploading') {
+    await minioClient.send(new AbortMultipartUploadCommand({
+      Bucket: RAW_VIDEO_BUCKET, Key: session.storageKey, UploadId: session.multipartUploadId,
+    })).catch((err) => console.warn('could not abort incomplete video upload', err));
+  }
+  await db.delete(videoUploadSessions).where(eq(videoUploadSessions.id, session.id));
+  return res.status(204).end();
+});
 
 router.get('/lessons/:lessonId/video-status', async (req: Request, res: Response) => {
   try {
@@ -952,7 +1128,7 @@ router.get('/courses/:courseId/quiz-analytics', async (req: Request, res: Respon
     const instructorId = req.user!.id;
     const { courseId } = req.params;
 
-    const courseRows = await db.select().from(courses).where(eq(courses.id, courseId)).limit(1);
+    const courseRows = await db.select().from(courses).where(courseById(req, courseId)).limit(1);
     if (courseRows.length === 0) return res.status(404).json({ message: 'Course not found' });
     if (courseRows[0].instructorId !== instructorId) return res.status(403).json({ message: 'Forbidden' });
 
@@ -1039,7 +1215,7 @@ router.get('/students', async (req: Request, res: Response) => {
       .from(enrollments)
       .innerJoin(courses, eq(enrollments.courseId, courses.id))
       .innerJoin(users, eq(enrollments.studentId, users.id))
-      .where(eq(courses.instructorId, instructorId))
+      .where(instructorCourses(req, instructorId))
       .orderBy(desc(enrollments.enrolledAt));
 
     return res.json({ students: rows });
@@ -1053,7 +1229,7 @@ router.get('/earnings', async (req: Request, res: Response) => {
   try {
     const instructorId = req.user!.id;
 
-    const courseRows = await db.select().from(courses).where(eq(courses.instructorId, instructorId));
+    const courseRows = await db.select().from(courses).where(instructorCourses(req, instructorId));
     const courseIds = courseRows.map((c) => c.id);
     // Prices are numeric(10,2); keep the cents (`| 0` used to truncate 49.99 to 49).
     const toMoney = (n: number) => Math.round(n * 100) / 100;
@@ -1126,7 +1302,7 @@ router.get('/analytics', async (req: Request, res: Response) => {
   try {
     const instructorId = req.user!.id;
 
-    const courseRows = await db.select().from(courses).where(eq(courses.instructorId, instructorId));
+    const courseRows = await db.select().from(courses).where(instructorCourses(req, instructorId));
     const courseIds = courseRows.map((c) => c.id);
 
     let enrollmentRows: { courseId: string; progress: number }[] = [];
@@ -1159,7 +1335,7 @@ router.get('/community-questions', async (req: Request, res: Response) => {
   try {
     const instructorId = req.user!.id;
 
-    const courseRows = await db.select().from(courses).where(eq(courses.instructorId, instructorId));
+    const courseRows = await db.select().from(courses).where(instructorCourses(req, instructorId));
     const courseIds = courseRows.map((c) => c.id);
     const courseTitleMap = new Map(courseRows.map((c) => [c.id, c.title]));
 

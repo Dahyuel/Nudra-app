@@ -34,6 +34,7 @@ router.post('/checkout', async (req: Request, res: Response) => {
 
     const [course] = await db.select().from(courses).where(eq(courses.id, courseId.data)).limit(1);
     if (!course || !course.isPublished) return res.status(404).json({ message: 'Course not found' });
+    if (course.deliveryMode === 'offline' || course.approvalStatus !== 'approved') return res.status(400).json({ message: 'Only approved online courses can be purchased.' });
     if (Number(course.price) <= 0) {
       return res.status(400).json({ message: 'This course is free. Enroll directly instead.' });
     }

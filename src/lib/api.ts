@@ -5,6 +5,16 @@ const api = axios.create({
   withCredentials: true,
 });
 
+api.interceptors.request.use((config) => {
+  const host = window.location.hostname.toLowerCase();
+  const orgSlug = new URLSearchParams(window.location.search).get('org');
+  if (orgSlug && /^[a-z0-9-]+$/.test(orgSlug)) config.headers.set('X-Organization-Slug', orgSlug);
+  if (host !== 'localhost' && host !== '127.0.0.1' && host !== 'nudra.org' && host !== 'www.nudra.org') {
+    config.headers.set('X-Organization-Host', host);
+  }
+  return config;
+});
+
 api.interceptors.response.use(
   (response) => response,
   (error) => {

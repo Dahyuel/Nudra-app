@@ -55,6 +55,7 @@ interface VideoUploadStatus {
   status: string;
   errorMsg?: string;
   uploading: boolean;
+  progress?: number;
 }
 
 interface QuizQuestionDraft {
@@ -117,6 +118,10 @@ export const UploadCoursePage: React.FC = () => {
 
   // Publish Status
   const [isPublished, setIsPublished] = useState(false);
+  const [deliveryMode, setDeliveryMode] = useState<'online' | 'offline'>('online');
+  const [location, setLocation] = useState('');
+  const [bookingUrl, setBookingUrl] = useState('');
+  const [scheduleText, setScheduleText] = useState('');
 
   // API state
   const [courseId, setCourseId] = useState<string | null>(null);
@@ -156,6 +161,10 @@ export const UploadCoursePage: React.FC = () => {
         setSubject(c.category);
         setThumbnailUrl(c.thumbnailUrl);
         setAlreadyPublished(c.isPublished);
+        setDeliveryMode((c as any).deliveryMode || 'online');
+        setLocation((c as any).location || '');
+        setBookingUrl((c as any).bookingUrl || '');
+        setScheduleText((c as any).scheduleText || '');
 
         // Stored as price = what students pay, originalPrice = struck-through full price.
         const price = Number(c.price) || 0;
@@ -246,13 +255,54 @@ export const UploadCoursePage: React.FC = () => {
       [lessonId]: { status: 'uploading', uploading: true },
     }));
 
-    const formData = new FormData();
-    formData.append('video', file);
-
+    let uploadId: string | undefined;
     try {
-      await api.post(`/api/instructor/lessons/${lessonId}/upload-video`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
+      const { data: upload } = await api.post(`/api/instructor/lessons/${lessonId}/video-uploads`, {
+        fileName: file.name,
+        fileSize: file.size,
+        contentType: file.type || 'application/octet-stream',
       });
+      uploadId = upload.uploadId as string;
+      const uploadedBytes = new Array<number>(upload.totalParts).fill(0);
+      let nextPart = 0;
+      let uploadFailed = false;
+      const updateProgress = () => {
+        const progress = Math.min(99, Math.round(uploadedBytes.reduce((sum, value) => sum + value, 0) / file.size * 100));
+        setVideoUploads((prev) => ({ ...prev, [lessonId]: { status: 'uploading', uploading: true, progress } }));
+      };
+      const uploadWorker = async () => {
+        while (!uploadFailed && nextPart < upload.totalParts) {
+          const partIndex = nextPart++;
+          const start = partIndex * upload.partSize;
+          const blob = file.slice(start, Math.min(start + upload.partSize, file.size));
+          let saved = false;
+          for (let attempt = 0; attempt < 3 && !saved; attempt++) {
+            uploadedBytes[partIndex] = 0;
+            updateProgress();
+            try {
+              await api.put(`/api/instructor/lessons/${lessonId}/video-uploads/${uploadId}/parts/${partIndex + 1}`, blob, {
+                headers: { 'Content-Type': 'application/octet-stream' },
+                onUploadProgress: (event) => {
+                  uploadedBytes[partIndex] = Math.min(blob.size, event.loaded);
+                  updateProgress();
+                },
+              });
+              uploadedBytes[partIndex] = blob.size;
+              updateProgress();
+              saved = true;
+            } catch (err) {
+              if (attempt === 2) {
+                uploadFailed = true;
+                throw err;
+              }
+            }
+          }
+        }
+      };
+      const workers = await Promise.allSettled(Array.from({ length: Math.min(3, upload.totalParts) }, uploadWorker));
+      const failedWorker = workers.find((worker) => worker.status === 'rejected');
+      if (failedWorker?.status === 'rejected') throw failedWorker.reason;
+      await api.post(`/api/instructor/lessons/${lessonId}/video-uploads/${uploadId}/complete`);
       setVideoUploads((prev) => ({
         ...prev,
         [lessonId]: { status: 'pending', uploading: false },
@@ -260,6 +310,7 @@ export const UploadCoursePage: React.FC = () => {
       // Fetch status immediately so the label switches from "Transcoding..." quickly
       await fetchVideoStatus(lessonId);
     } catch (err: any) {
+      if (uploadId) await api.delete(`/api/instructor/lessons/${lessonId}/video-uploads/${uploadId}`).catch(() => {});
       setVideoUploads((prev) => ({
         ...prev,
         [lessonId]: {
@@ -413,7 +464,7 @@ export const UploadCoursePage: React.FC = () => {
       return (
         <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-gray-600">
           <Loader2 className="w-3.5 h-3.5 animate-spin" />
-          Uploading...
+          Uploading {status.progress ?? 0}%...
         </span>
       );
     }
@@ -511,12 +562,28 @@ export const UploadCoursePage: React.FC = () => {
     setError(null);
     setIsSubmitting(true);
     try {
+      if (deliveryMode === 'offline' && currentStep === 1) {
+        const basicInfo = { title: title || 'Untitled Course', description: description || 'Offline course booking.', category: subject, level: 'All Levels', thumbnail_url: thumbnailUrl, delivery_mode: 'offline', location: location || undefined, booking_url: bookingUrl || undefined, schedule_text: scheduleText || undefined, price: 0 };
+        if (courseId) await api.put(`/api/instructor/courses/${courseId}`, basicInfo);
+        else { const { data } = await api.post('/api/instructor/courses', basicInfo); setCourseId(data.course.id); }
+        setCurrentStep(4);
+        return;
+      }
+      if (deliveryMode === 'offline' && currentStep === 4 && courseId) {
+        await api.put(`/api/instructor/courses/${courseId}`, { delivery_mode: 'offline', location: location || undefined, booking_url: bookingUrl || undefined, schedule_text: scheduleText || undefined, price: 0 });
+        setCurrentStep(4);
+        return;
+      }
       if (currentStep === 1) {
         const basicInfo = {
           title: title || 'Untitled Masterclass',
           description: description || 'Comprehensive curriculum with video lessons.',
           category: subject,
           thumbnail_url: thumbnailUrl,
+          delivery_mode: deliveryMode,
+          location: location || undefined,
+          booking_url: bookingUrl || undefined,
+          schedule_text: scheduleText || undefined,
         };
         if (courseId) {
           // Editing, or came Back to step 1: update instead of creating a duplicate course.
@@ -526,6 +593,7 @@ export const UploadCoursePage: React.FC = () => {
           setCourseId(data.course.id);
         }
       } else if (currentStep === 2 && courseId) {
+        if (deliveryMode === 'offline') { setCurrentStep(3); return; }
         const oldSections = sections;
         // Saved sections/lessons carry their id so the server updates them in place
         // (keeping videos, quizzes and student progress) instead of re-creating them.
@@ -572,11 +640,15 @@ export const UploadCoursePage: React.FC = () => {
           }
         }
         setPendingVideoFiles({});
-      } else if (currentStep === 3 && courseId) {
+      } else if (currentStep === 3 && courseId && deliveryMode === 'online') {
         // Students pay the discounted price; the full price is the struck-through
         // "original" price (these used to be saved the other way round).
         const hasDiscount = !isFree && discountPercent > 0;
         await api.put(`/api/instructor/courses/${courseId}`, {
+          delivery_mode: deliveryMode,
+          location: location || undefined,
+          booking_url: bookingUrl || undefined,
+          schedule_text: scheduleText || undefined,
           price: isFree ? 0 : hasDiscount ? Math.round(priceEgp * (1 - discountPercent / 100)) : priceEgp,
           original_price: hasDiscount ? priceEgp : null,
         });
@@ -599,8 +671,13 @@ export const UploadCoursePage: React.FC = () => {
     setError(null);
     setIsSubmitting(true);
     try {
-      await api.post(`/api/instructor/courses/${courseId}/publish`);
-      setIsPublished(true);
+      if (user?.organizationContext) {
+        await api.put(`/api/instructor/courses/${courseId}`, { delivery_mode: deliveryMode, location: location || undefined, booking_url: bookingUrl || undefined, schedule_text: scheduleText || undefined });
+        setIsPublished(false);
+      } else {
+        await api.post(`/api/instructor/courses/${courseId}/publish`);
+        setIsPublished(true);
+      }
       navigate('/instructor/courses');
     } catch (err: any) {
       setError(err?.response?.data?.message || 'Failed to publish course');
@@ -755,7 +832,7 @@ export const UploadCoursePage: React.FC = () => {
                       : 'text-gray-400 group-hover:text-gray-600'
                   }`}
                 >
-                  Step {s.step}: {s.label}
+                  Step {s.step}: {deliveryMode === 'offline' ? ({ 1: 'Details', 2: 'Not used', 3: 'Not used', 4: 'Submit' } as Record<number, string>)[s.step] : s.label}
                 </span>
               </div>
             );
@@ -802,6 +879,14 @@ export const UploadCoursePage: React.FC = () => {
               </h3>
 
               <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">Course format</label>
+                  <select value={deliveryMode} onChange={(e) => setDeliveryMode(e.target.value as 'online' | 'offline')} className="w-full rounded-xl border border-gray-200 px-4 py-3 text-sm">
+                    <option value="online">Online course</option><option value="offline">Offline course · booking only</option>
+                  </select>
+                  {user?.organizationContext && <p className="mt-1 text-xs text-amber-700">Your organization manager must approve this submission before students can see it.</p>}
+                </div>
+                {deliveryMode === 'offline' && <div className="grid gap-4 sm:grid-cols-2"><label className="text-xs font-bold text-gray-700">Location<input required value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Address or venue" className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm font-normal" /></label><label className="text-xs font-bold text-gray-700">Schedule<input required value={scheduleText} onChange={(e) => setScheduleText(e.target.value)} placeholder="Days and times" className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm font-normal" /></label><label className="text-xs font-bold text-gray-700 sm:col-span-2">Booking URL<input required type="url" value={bookingUrl} onChange={(e) => setBookingUrl(e.target.value)} placeholder="https://..." className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm font-normal" /></label></div>}
                 <div>
                   <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
                     Course Title
@@ -874,8 +959,10 @@ export const UploadCoursePage: React.FC = () => {
             </div>
           )}
 
+          {currentStep === 4 && user?.organizationContext && <div className="rounded-xl border border-blue-100 bg-blue-50 p-5 text-sm text-blue-900">Your course details are saved. Submitting sends it to your organization manager for approval. It will appear to students after approval and publication.</div>}
+
           {/* STEP 2: CURRICULUM (Add Sections, Add Lessons, Upload Video) */}
-          {currentStep === 2 && (
+          {currentStep === 2 && deliveryMode === 'online' && (
             <div className="space-y-6 animate-in fade-in duration-150">
               <div className="flex items-center justify-between pb-3 border-b border-gray-100">
                 <h3 className="font-bold text-base text-[#1B1B1B] flex items-center gap-2">
@@ -1113,7 +1200,7 @@ export const UploadCoursePage: React.FC = () => {
           )}
 
           {/* STEP 3: PRICING (Free/Paid toggle, Price in EGP, Discount %) */}
-          {currentStep === 3 && (
+          {currentStep === 3 && deliveryMode === 'online' && (
             <div className="space-y-6 animate-in fade-in duration-150">
               <h3 className="font-bold text-base text-[#1B1B1B] pb-3 border-b border-gray-100 flex items-center gap-2">
                 <DollarSign className="w-4 h-4 text-[#2D6A4F]" />
@@ -1302,7 +1389,7 @@ export const UploadCoursePage: React.FC = () => {
                   <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
                 ) : (
                   <>
-                    <span>Continue to Step {currentStep + 1}</span>
+                    <span>Continue to Step {deliveryMode === 'offline' && currentStep === 1 ? 4 : currentStep + 1}</span>
                     <ChevronRight className="w-4 h-4" />
                   </>
                 )}
@@ -1319,7 +1406,7 @@ export const UploadCoursePage: React.FC = () => {
                 ) : (
                   <>
                     <Check className="w-4 h-4" />
-                    <span>{alreadyPublished ? 'Save & finish' : 'Publish Course to Marketplace'}</span>
+                    <span>{user?.organizationContext ? 'Submit for manager approval' : alreadyPublished ? 'Save & finish' : 'Publish Course to Marketplace'}</span>
                   </>
                 )}
               </button>

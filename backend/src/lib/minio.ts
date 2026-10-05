@@ -1,74 +1,87 @@
-import { Client } from 'minio';
+import {
+  S3Client,
+  HeadBucketCommand,
+  CreateBucketCommand,
+  PutBucketPolicyCommand,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  ListObjectsV2Command,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { createWriteStream } from 'fs';
+import { pipeline } from 'stream/promises';
+import type { Readable } from 'stream';
 
 export const THUMBNAIL_BUCKET = 'nudra-thumbnails';
 export const RAW_VIDEO_BUCKET = 'nudra-raw-videos';
 export const HLS_BUCKET = 'nudra-hls';
 
-export const minioClient = new Client({
-  endPoint: process.env.MINIO_ENDPOINT || 'localhost',
-  port: Number(process.env.MINIO_PORT) || 9000,
-  useSSL: process.env.MINIO_USE_SSL === 'true',
-  accessKey: process.env.MINIO_ACCESS_KEY || 'nudra_minio',
-  secretKey: process.env.MINIO_SECRET_KEY || 'nudra_minio_secret',
+const isProduction = process.env.NODE_ENV === 'production';
+const configuredEndpoint = process.env.MINIO_ENDPOINT || 'localhost';
+const storageEndpoint = /^https?:\/\//i.test(configuredEndpoint)
+  ? configuredEndpoint.replace(/\/$/, '')
+  : `http://${configuredEndpoint}:${process.env.MINIO_PORT || '9000'}`;
+const accessKeyId = process.env.MINIO_ACCESS_KEY || (isProduction ? '' : 'nudra_minio');
+const secretAccessKey = process.env.MINIO_SECRET_KEY || (isProduction ? '' : 'nudra_minio_secret');
+
+if (isProduction && (!accessKeyId || !secretAccessKey)) {
+  throw new Error('MINIO_ACCESS_KEY and MINIO_SECRET_KEY are required in production');
+}
+
+export const minioClient = new S3Client({
+  region: process.env.MINIO_REGION || 'us-east-1',
+  endpoint: storageEndpoint,
+  forcePathStyle: true,
+  credentials: { accessKeyId, secretAccessKey },
 });
 
-export const MINIO_PUBLIC_ENDPOINT =
-  process.env.MINIO_PUBLIC_ENDPOINT ||
-  `${process.env.MINIO_USE_SSL === 'true' ? 'https' : 'http'}://${process.env.MINIO_ENDPOINT || 'localhost'}:${process.env.MINIO_PORT || 9000}`;
+// Kept as a source-compatible alias for routes that still use the old name.
+export const r2Client = minioClient;
 
-function publicReadPolicy(bucket: string) {
-  return {
-    Version: '2012-10-17',
-    Statement: [
-      {
-        Effect: 'Allow',
-        Principal: { AWS: ['*'] },
-        Action: ['s3:GetObject'],
-        Resource: ['arn:aws:s3:::' + bucket + '/*'],
-      },
-    ],
-  };
+const publicStorageUrl = isProduction
+  ? process.env.PUBLIC_STORAGE_URL
+  : process.env.MINIO_PUBLIC_ENDPOINT || 'http://localhost:9000';
+
+if (isProduction && !publicStorageUrl) {
+  throw new Error('PUBLIC_STORAGE_URL is required in production');
 }
 
-function privatePolicy(bucket: string) {
-  return {
-    Version: '2012-10-17',
-    Statement: [
-      {
-        Effect: 'Deny',
-        Principal: { AWS: ['*'] },
-        Action: ['s3:GetObject'],
-        Resource: ['arn:aws:s3:::' + bucket + '/*'],
-      },
-    ],
-  };
-}
+export const PUBLIC_STORAGE_URL = String(publicStorageUrl || '').replace(/\/$/, '');
 
-async function ensurePublicBucket(bucket: string): Promise<void> {
-  const exists = await minioClient.bucketExists(bucket);
-  if (!exists) {
-    await minioClient.makeBucket(bucket, 'us-east-1');
-  }
-  await minioClient.setBucketPolicy(bucket, JSON.stringify(publicReadPolicy(bucket)));
-  console.log('MinIO bucket ready: ' + bucket);
-}
-
-async function ensurePrivateBucket(bucket: string): Promise<void> {
-  const exists = await minioClient.bucketExists(bucket);
-  if (!exists) {
-    await minioClient.makeBucket(bucket, 'us-east-1');
-  }
-  await minioClient.setBucketPolicy(bucket, JSON.stringify(privatePolicy(bucket)));
-  console.log('MinIO bucket ready: ' + bucket);
+function encodedObjectPath(objectName: string): string {
+  return objectName.split('/').map(encodeURIComponent).join('/');
 }
 
 export async function ensureBucket(): Promise<void> {
-  try {
-    await ensurePublicBucket(THUMBNAIL_BUCKET);
-    await ensurePrivateBucket(RAW_VIDEO_BUCKET);
-    await ensurePublicBucket(HLS_BUCKET);
-  } catch (err) {
-    console.error('MinIO bucket setup failed', err);
+  for (const bucket of [THUMBNAIL_BUCKET, RAW_VIDEO_BUCKET, HLS_BUCKET]) {
+    try {
+      await minioClient.send(new HeadBucketCommand({ Bucket: bucket }));
+      console.log(`MinIO bucket reachable: ${bucket}`);
+    } catch (headError) {
+      try {
+        await minioClient.send(new CreateBucketCommand({ Bucket: bucket }));
+        console.log(`MinIO bucket created: ${bucket}`);
+      } catch (createError) {
+        console.error(`MinIO bucket is missing or inaccessible: ${bucket}`, headError);
+        throw createError;
+      }
+    }
+
+    // Development uses direct browser access for public buckets. Production
+    // access policies are applied by the VPS MinIO bootstrap, not by the API.
+    if (!isProduction && (bucket === THUMBNAIL_BUCKET || bucket === HLS_BUCKET)) {
+      const policy = {
+        Version: '2012-10-17',
+        Statement: [{
+          Effect: 'Allow',
+          Principal: { AWS: ['*'] },
+          Action: ['s3:GetObject'],
+          Resource: [`arn:aws:s3:::${bucket}/*`],
+        }],
+      };
+      await minioClient.send(new PutBucketPolicyCommand({ Bucket: bucket, Policy: JSON.stringify(policy) }));
+    }
   }
 }
 
@@ -81,7 +94,7 @@ export function getHlsPlaylistKey(lessonId: string): string {
 }
 
 export function getThumbnailUrl(objectName: string): string {
-  return `${MINIO_PUBLIC_ENDPOINT}/${THUMBNAIL_BUCKET}/${objectName}`;
+  return `${PUBLIC_STORAGE_URL}/${THUMBNAIL_BUCKET}/${encodedObjectPath(objectName)}`;
 }
 
 export async function getPresignedVideoUrl(
@@ -89,15 +102,63 @@ export async function getPresignedVideoUrl(
   objectName: string,
   expirySeconds = 300
 ): Promise<string> {
-  return await minioClient.presignedGetObject(bucket, objectName, expirySeconds);
+  return await getSignedUrl(
+    minioClient,
+    new GetObjectCommand({ Bucket: bucket, Key: objectName }),
+    { expiresIn: expirySeconds }
+  );
 }
 
-/** Raw uploads live at lessons/raw/<lessonId>/<uuid>.<ext>; newest first. */
+export async function downloadObject(bucket: string, key: string, localPath: string): Promise<void> {
+  const res = await minioClient.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+  if (!res.Body) throw new Error(`Empty body for ${bucket}/${key}`);
+  await pipeline(res.Body as Readable, createWriteStream(localPath));
+}
+
+export async function removeObject(bucket: string, key: string): Promise<void> {
+  await minioClient.send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+}
+
 export async function listRawVideoKeys(lessonId: string): Promise<string[]> {
   const found: { name: string; lastModified: Date }[] = [];
-  const stream = minioClient.listObjectsV2(RAW_VIDEO_BUCKET, `lessons/raw/${lessonId}/`, true);
-  for await (const obj of stream as AsyncIterable<{ name?: string; lastModified?: Date }>) {
-    if (obj.name) found.push({ name: obj.name, lastModified: obj.lastModified ?? new Date(0) });
-  }
+  let continuationToken: string | undefined;
+  do {
+    const res = await minioClient.send(
+      new ListObjectsV2Command({
+        Bucket: RAW_VIDEO_BUCKET,
+        Prefix: `lessons/raw/${lessonId}/`,
+        ContinuationToken: continuationToken,
+      })
+    );
+    for (const obj of res.Contents ?? []) {
+      if (obj.Key) found.push({ name: obj.Key, lastModified: obj.LastModified ?? new Date(0) });
+    }
+    continuationToken = res.IsTruncated ? res.NextContinuationToken : undefined;
+  } while (continuationToken);
   return found.sort((a, b) => b.lastModified.getTime() - a.lastModified.getTime()).map((o) => o.name);
 }
+
+export const storage = {
+  async getObject(bucket: string, key: string) {
+    const res = await minioClient.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    return res.Body as Readable;
+  },
+  async putObject(bucket: string, key: string, body: Buffer | Readable, _size?: number, meta?: Record<string, string>) {
+    await minioClient.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: body as never, ContentType: meta && meta['Content-Type'] }));
+  },
+  async removeObject(bucket: string, key: string) {
+    await removeObject(bucket, key);
+  },
+  listObjectsV2(bucket: string, prefix: string, _recursive?: boolean) {
+    return {
+      [Symbol.asyncIterator]: async function* () {
+        let token: string | undefined;
+        do {
+          const r = await minioClient.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ContinuationToken: token }));
+          for (const o of r.Contents ?? []) yield { name: o.Key, lastModified: o.LastModified };
+          token = r.IsTruncated ? r.NextContinuationToken : undefined;
+        } while (token);
+      },
+    };
+  },
+};

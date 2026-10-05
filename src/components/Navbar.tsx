@@ -81,7 +81,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar }) => {
                 if (e.key === 'Escape') setShowSearch(false);
               }}
               placeholder="Search courses, lessons, discussions..."
-              className="w-full pr-10 pl-10 py-2 text-sm bg-white border border-gray-200/80 rounded-full focus:outline-none focus:border-[#2D6A4F] focus:ring-2 focus:ring-[#2D6A4F]/10 text-gray-800 placeholder-gray-400 shadow-2xs transition-all text-right"
+              className="w-full pr-10 pl-10 py-2 text-sm bg-white border border-gray-200/80 rounded-full focus:outline-none focus:border-[#2D6A4F] focus:ring-2 focus:ring-[#2D6A4F]/10 text-gray-800 placeholder-gray-400 shadow-2xs transition-all text-left"
             />
             {searchQuery && (
               <button
@@ -114,7 +114,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar }) => {
                           setSearchQuery('');
                           navigate(`/course/${c.id}`);
                         }}
-                        className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-[#F8FAF9] text-right transition-colors"
+                        className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-[#F8FAF9] text-left transition-colors"
                       >
                         {c.thumbnailUrl ? (
                           <img src={c.thumbnailUrl} alt={c.title} className="w-9 h-9 rounded-lg object-cover" />
@@ -139,14 +139,14 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar }) => {
                       <button
                         key={l.id}
                         onClick={() => goToLesson(l.courseId, l.id)}
-                        className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-[#F8FAF9] text-right transition-colors"
+                        className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-[#F8FAF9] text-left transition-colors"
                       >
                         <span className="w-9 h-9 rounded-lg bg-emerald-50 flex items-center justify-center">
                           <Play className="w-4 h-4 text-emerald-600" />
                         </span>
                         <span className="flex-1 min-w-0">
                           <span className="block text-xs font-bold text-gray-900 truncate">{l.title}</span>
-                          <span className="block text-[11px] text-gray-500">في {l.courseTitle}</span>
+                          <span className="block text-[11px] text-gray-500">In {l.courseTitle}</span>
                         </span>
                       </button>
                     ))}
@@ -164,13 +164,13 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar }) => {
                           setSearchQuery('');
                           navigate(p.courseId ? `/course/${p.courseId}/community` : '/community');
                         }}
-                        className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-[#F8FAF9] text-right transition-colors"
+                        className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-[#F8FAF9] text-left transition-colors"
                       >
                         <span className="w-9 h-9 rounded-lg bg-blue-50 flex items-center justify-center">
                           <MessageSquare className="w-4 h-4 text-blue-600" />
                         </span>
                         <span className="flex-1 min-w-0">
-                          <span className="block text-xs font-bold text-gray-900 truncate">{p.title ?? 'منشور'}</span>
+                          <span className="block text-xs font-bold text-gray-900 truncate">{p.title ?? 'Post'}</span>
                           <span className="block text-[11px] text-gray-500 truncate">
                             {p.content.length > 80 ? `${p.content.slice(0, 80)}...` : p.content}
                           </span>
@@ -181,7 +181,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar }) => {
                 )}
 
                 {!searchLoading && !hasResults && (
-                  <p className="py-6 text-center text-xs text-gray-400">لا توجد نتائج لـ '{activeQuery}'</p>
+                  <p className="py-6 text-center text-xs text-gray-400">No results for '{activeQuery}'</p>
                 )}
               </div>
             )}
@@ -225,7 +225,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar }) => {
                       onClick={() => markAllRead().catch(console.warn)}
                       className="text-xs text-[#2D6A4F] hover:underline font-semibold"
                     >
-                      تعليم الكل كمقروء
+                      Mark all as read
                     </button>
                   )}
                 </div>
@@ -242,7 +242,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar }) => {
                   {!isLoading && notifications.length === 0 && (
                     <div className="py-8 flex flex-col items-center gap-2 text-gray-400">
                       <Bell className="w-6 h-6" />
-                      <p className="text-xs">لا توجد إشعارات</p>
+                      <p className="text-xs">No notifications</p>
                     </div>
                   )}
 
@@ -250,7 +250,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onToggleSidebar }) => {
                     <button
                       key={item.id}
                       onClick={() => handleNotificationClick(item.id, item.link)}
-                      className={`w-full text-right p-3 rounded-xl transition-colors flex items-start gap-3 ${
+                      className={`w-full text-left p-3 rounded-xl transition-colors flex items-start gap-3 ${
                         !item.isRead ? 'bg-[#F8FAF9] border-r-2 border-[#2D6A4F]' : 'hover:bg-gray-50'
                       }`}
                     >

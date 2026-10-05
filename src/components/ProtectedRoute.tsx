@@ -1,5 +1,5 @@
 import React from 'react';
-import { Navigate, Outlet } from 'react-router-dom';
+import { Navigate, Outlet, useLocation } from 'react-router-dom';
 import { useAuth, homePathFor, isApprovedInstructor } from '../context/AuthContext';
 
 interface ProtectedRouteProps {
@@ -8,6 +8,7 @@ interface ProtectedRouteProps {
 
 export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ requiredRole }) => {
   const { user, isLoading } = useAuth();
+  const location = useLocation();
 
   if (isLoading) {
     return (
@@ -18,7 +19,13 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ requiredRole }) 
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to={`/login${location.search}`} replace />;
+  }
+
+  if (user.organizationContext && user.role === 'student' &&
+      !location.pathname.startsWith('/organization') && !location.pathname.startsWith('/course/') &&
+      location.pathname !== '/settings') {
+    return <Navigate to={homePathFor(user)} replace />;
   }
 
   if (requiredRole && user.role !== requiredRole) {

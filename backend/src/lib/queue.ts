@@ -1,7 +1,8 @@
 import { Queue } from 'bullmq';
+import { getRedisUrl } from './redisConnection';
 
 const connection = {
-  url: process.env.REDIS_URL || 'redis://localhost:6379',
+  url: getRedisUrl(),
 };
 
 export const videoQueue = new Queue('video-transcoding', { connection });

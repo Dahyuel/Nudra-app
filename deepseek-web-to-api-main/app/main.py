@@ -13,11 +13,10 @@ from app import store as conversation_store
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import sys
-    import os
     from pathlib import Path as _Path
 
-    # Make sure a logs directory exists
-    log_dir = _Path("/opt/deepseek-proxy/app/logs")
+    # Keep development logs inside this checkout so local startup needs no root permissions.
+    log_dir = _Path(__file__).resolve().parent / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
     logger.remove()

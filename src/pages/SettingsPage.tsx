@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { User, Bell, Shield, Globe, Moon, Sun, Save, Check } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
@@ -6,6 +7,7 @@ import api from '../lib/api';
 
 export const SettingsPage: React.FC = () => {
   const { user, refreshUser } = useAuth();
+  const [searchParams] = useSearchParams();
   const { theme, toggleTheme } = useTheme();
   const [name, setName] = useState(user?.name ?? '');
   const [avatarUrl, setAvatarUrl] = useState(user?.avatarUrl ?? '');
@@ -91,10 +93,11 @@ export const SettingsPage: React.FC = () => {
     setPwMessage(null);
     setIsChangingPw(true);
     try {
-      await api.put('/api/auth/password', { currentPassword, newPassword });
+      await api.put('/api/auth/password', { currentPassword: currentPassword || undefined, newPassword });
       setPwMessage({ type: 'ok', text: 'Password updated successfully' });
       setCurrentPassword('');
       setNewPassword('');
+      await refreshUser();
     } catch (err: any) {
       setPwMessage({ type: 'err', text: err?.response?.data?.message || 'Failed to change password' });
     } finally {
@@ -329,14 +332,16 @@ export const SettingsPage: React.FC = () => {
           <Shield className="w-4 h-4 text-[#2D6A4F]" />
           <span>Change Password</span>
         </h3>
+        {user?.mustChangePassword && <p className="rounded-xl bg-amber-50 p-3 text-sm font-semibold text-amber-900">For your account security, set a new password before continuing.</p>}
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
-              Current Password
+              {user?.mustChangePassword ? 'Temporary Password' : 'Current Password'}
             </label>
             <input
               type="password"
               value={currentPassword}
+              required={!user?.mustChangePassword}
               onChange={(e) => setCurrentPassword(e.target.value)}
               className="w-full px-4 py-2.5 text-xs sm:text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-[#2D6A4F]"
             />
@@ -348,6 +353,7 @@ export const SettingsPage: React.FC = () => {
             <input
               type="password"
               value={newPassword}
+              required
               onChange={(e) => setNewPassword(e.target.value)}
               className="w-full px-4 py-2.5 text-xs sm:text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-[#2D6A4F]"
             />
@@ -361,7 +367,7 @@ export const SettingsPage: React.FC = () => {
         <div className="flex justify-end">
           <button
             type="submit"
-            disabled={isChangingPw || !currentPassword || !newPassword}
+            disabled={isChangingPw || (!currentPassword && !user?.mustChangePassword) || !newPassword}
             className="inline-flex items-center gap-2 px-6 py-2.5 rounded-xl bg-[#2D6A4F] hover:bg-[#23533e] text-white text-xs font-bold shadow-sm transition-all disabled:opacity-60"
           >
             <Shield className="w-4 h-4" />

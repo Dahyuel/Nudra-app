@@ -7,6 +7,8 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import slowDown from 'express-slow-down';
+import { createHash } from 'crypto';
+import { isIP } from 'node:net';
 import authRouter from './routes/auth';
 import coursesRouter, { myCoursesHandler } from './routes/courses';
 import instructorRouter from './routes/instructor';
@@ -20,27 +22,105 @@ import sanaweyaRouter from './routes/sanaweya';
 import { createCommunityRouter } from './routes/community';
 import { ensureBucket } from './lib/minio';
 import { db } from './db';
-import { sessions, users } from './db/schema';
-import { eq, and, gt } from 'drizzle-orm';
+import { sessions, users, organizations } from './db/schema';
+import { eq, and, gt, or, isNotNull } from 'drizzle-orm';
 import { requireAuth, requireRole } from './middleware/requireAuth';
+import { resolveOrg } from './middleware/resolveOrg';
 import { setIO } from './lib/socket';
 import notificationsRouter from './routes/notifications';
 import searchRouter from './routes/search';
 import adminRouter from './routes/admin';
 import paymentsRouter from './routes/payments';
+import organizationsRouter from './routes/organizations';
+import domainAuthorizationRouter from './routes/domainAuthorization';
 import './workers/transcodeWorker';
+import { createRedisRateLimitStore } from './middleware/rateLimit';
 
+const isProd = process.env.NODE_ENV === 'production';
 const app = express();
 const httpServer = createServer(app);
+const trustProxy = process.env.TRUST_PROXY?.trim();
+function isExplicitProxyAddress(value: string): boolean {
+  const [address, mask, extra] = value.split('/');
+  if (extra !== undefined) return false;
+  const family = isIP(address);
+  if (!family) return false;
+  if (mask === undefined) return true;
+  if (!/^\d+$/.test(mask)) return false;
+  const bits = Number(mask);
+  return bits >= 0 && bits <= (family === 4 ? 32 : 128);
+}
+if (isProd && (!trustProxy || trustProxy.split(',').some((proxy) => !isExplicitProxyAddress(proxy.trim())))) {
+  throw new Error('TRUST_PROXY must contain only explicit trusted reverse-proxy IP addresses or CIDRs in production');
+}
+app.set('trust proxy', trustProxy || 'loopback');
 
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://localhost:3000')
+const configuredOrigins = process.env.ALLOWED_ORIGINS;
+if (isProd && !configuredOrigins?.trim()) {
+  throw new Error('ALLOWED_ORIGINS must list the exact HTTPS frontend origins in production');
+}
+
+const ALLOWED_ORIGINS = (configuredOrigins || 'http://localhost:5173,http://localhost:3000')
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
+if (ALLOWED_ORIGINS.length === 0) throw new Error('ALLOWED_ORIGINS must contain at least one exact frontend origin');
+
+function parseSafeOrigin(origin: string): URL | null {
+  try {
+    const parsed = new URL(origin);
+    if (parsed.origin !== origin || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) return null;
+    if (isProd ? parsed.protocol !== 'https:' : !['http:', 'https:'].includes(parsed.protocol)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+for (const origin of ALLOWED_ORIGINS) {
+  if (!parseSafeOrigin(origin)) throw new Error(`Invalid or insecure ALLOWED_ORIGINS entry: ${origin}`);
+}
+
+const inferredOrganizationRootDomains = ALLOWED_ORIGINS
+  .map((origin) => new URL(origin).hostname)
+  .filter((host) => host.split('.').length === 2 || (host.startsWith('www.') && host.split('.').length === 3))
+  .map((host) => host.startsWith('www.') ? host.slice(4) : host)
+  .filter((host, index, all) => all.indexOf(host) === index);
+const ORGANIZATION_ROOT_DOMAINS = (process.env.ORGANIZATION_ROOT_DOMAINS
+  ? process.env.ORGANIZATION_ROOT_DOMAINS.split(',')
+  : inferredOrganizationRootDomains)
+  .map((host) => host.trim().toLowerCase())
+  .filter(Boolean);
+
+async function isAllowedOrigin(origin: string): Promise<boolean> {
+  const parsed = parseSafeOrigin(origin);
+  if (!parsed) return false;
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  if (parsed.port) return false;
+
+  const hostname = parsed.hostname.toLowerCase();
+  const tenantRoot = ORGANIZATION_ROOT_DOMAINS.find((root) => {
+    const prefix = `${hostname.slice(0, -(root.length + 1))}`;
+    return hostname.endsWith(`.${root}`) && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(prefix);
+  });
+  const conditions = [and(eq(organizations.customDomain, hostname), eq(organizations.customDomainStatus, 'active'), eq(organizations.isActive, true), isNotNull(organizations.customDomainVerifiedAt))];
+  if (tenantRoot) {
+    const slug = hostname.slice(0, -(tenantRoot.length + 1));
+    conditions.push(and(eq(organizations.slug, slug), eq(organizations.isActive, true)));
+  }
+  const rows = await db.select({ id: organizations.id }).from(organizations)
+    .where(or(...conditions)).limit(1);
+  return rows.length > 0;
+}
+
+function allowCorsOrigin(origin: string | undefined, callback: (err: Error | null, allowed?: boolean) => void) {
+  if (!origin) return callback(null, true);
+  void isAllowedOrigin(origin).then((allowed) => callback(null, allowed)).catch(() => callback(null, false));
+}
 
 export const io = new Server(httpServer, {
   cors: {
-    origin: ALLOWED_ORIGINS,
+    origin: allowCorsOrigin,
     credentials: true,
   },
 });
@@ -100,8 +180,6 @@ io.on('connection', (socket) => {
   });
 });
 
-const isProd = process.env.NODE_ENV === 'production';
-
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -110,7 +188,7 @@ app.use(
         connectSrc: ["'self'", 'blob:', 'data:', ...ALLOWED_ORIGINS],
         scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", ...ALLOWED_ORIGINS],
         styleSrc: ["'self'", "'unsafe-inline'", ...ALLOWED_ORIGINS],
-        imgSrc: ["'self'", 'blob:', 'data:', ...ALLOWED_ORIGINS],
+        imgSrc: ["'self'", 'blob:', 'data:', 'https:', ...ALLOWED_ORIGINS],
         mediaSrc: ["'self'", 'blob:', 'data:', ...ALLOWED_ORIGINS],
         fontSrc: ["'self'", ...ALLOWED_ORIGINS],
         frameSrc: ["'none'"],
@@ -121,35 +199,68 @@ app.use(
       },
     },
     crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: 'same-site' },
+    strictTransportSecurity: isProd
+      ? { maxAge: 31_536_000, includeSubDomains: false, preload: false }
+      : false,
   })
 );
 app.use(
   cors({
-    origin: (origin, callback) => {
-      if (!origin || ALLOWED_ORIGINS.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
+    origin: allowCorsOrigin,
     credentials: true,
   })
 );
 app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb', parameterLimit: 100 }));
 app.use(cookieParser());
 
+app.use('/api', (req, res, next) => {
+  res.set({
+    'Cache-Control': 'no-store, max-age=0',
+    Pragma: 'no-cache',
+    Expires: '0',
+  });
+  return next();
+});
+app.use(resolveOrg);
+
+const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
+app.use('/api', (req, res, next) => {
+  if (safeMethods.has(req.method)) return next();
+  const origin = req.get('origin');
+  if (!origin) {
+    if (req.get('sec-fetch-site') === 'cross-site') {
+      return res.status(403).json({ message: 'Request origin is not allowed.' });
+    }
+    return next();
+  }
+  void isAllowedOrigin(origin).then((allowed) => {
+    if (!allowed) return res.status(403).json({ message: 'Request origin is not allowed.' });
+    return next();
+  }).catch(() => res.status(403).json({ message: 'Request origin is not allowed.' }));
+});
+
+function positiveLimit(value: string | undefined, fallback: number, maximum: number): number {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= maximum ? parsed : fallback;
+}
+
 const limiter = rateLimit({
-  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000),
-  max: Number(process.env.RATE_LIMIT_MAX || 1000),
+  windowMs: positiveLimit(process.env.RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000, 86_400_000),
+  limit: positiveLimit(process.env.RATE_LIMIT_MAX, 1000, 1_000_000),
+  store: createRedisRateLimitStore('nudra:rate:api'),
+  passOnStoreError: false,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: 'Too many requests, please try again later' },
 });
 
 const authLimiter = rateLimit({
-  windowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000),
-  max: Number(process.env.AUTH_RATE_LIMIT_MAX || 50),
+  windowMs: positiveLimit(process.env.AUTH_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000, 86_400_000),
+  limit: positiveLimit(process.env.AUTH_RATE_LIMIT_MAX, 10, 1000),
+  store: createRedisRateLimitStore('nudra:rate:auth'),
+  passOnStoreError: false,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: 'Too many attempts, please try again later' },
@@ -159,16 +270,29 @@ const authLimiter = rateLimit({
 // per IP + email. Successful sign-ins (e.g. switching accounts) never use up the
 // limit, and a typo on one account can't lock out everyone on a shared network.
 const loginLimiter = rateLimit({
-  windowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000),
-  max: Number(process.env.AUTH_RATE_LIMIT_MAX || 50),
+  windowMs: positiveLimit(process.env.AUTH_RATE_LIMIT_WINDOW_MS, 15 * 60 * 1000, 86_400_000),
+  limit: positiveLimit(process.env.LOGIN_RATE_LIMIT_MAX, 10, 1000),
+  store: createRedisRateLimitStore('nudra:rate:login'),
+  passOnStoreError: false,
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: true,
   keyGenerator: (req) => {
     const email = typeof req.body?.email === 'string' ? req.body.email.toLowerCase().trim() : '';
-    return `${ipKeyGenerator(req.ip ?? '')}|${email}`;
+    const emailKey = createHash('sha256').update(email).digest('hex');
+    return `${ipKeyGenerator(req.ip || '127.0.0.1')}|${emailKey}`;
   },
   message: { message: 'Too many failed sign-in attempts. Please wait a few minutes and try again.' },
+});
+
+const domainAuthorizationLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  limit: 600,
+  store: createRedisRateLimitStore('nudra:rate:domain-auth'),
+  passOnStoreError: false,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many domain authorization checks. Please try again later.' },
 });
 
 const speedLimiter = slowDown({
@@ -178,8 +302,10 @@ const speedLimiter = slowDown({
 });
 
 const aiLimiter = rateLimit({
-  windowMs: Number(process.env.AI_RATE_LIMIT_WINDOW_MS || 60 * 1000),
-  max: Number(process.env.AI_RATE_LIMIT_MAX || 20),
+  windowMs: positiveLimit(process.env.AI_RATE_LIMIT_WINDOW_MS, 60 * 1000, 86_400_000),
+  limit: positiveLimit(process.env.AI_RATE_LIMIT_MAX, 20, 1000),
+  store: createRedisRateLimitStore('nudra:rate:ai'),
+  passOnStoreError: false,
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: 'Too many AI requests, please slow down' },
@@ -189,6 +315,7 @@ app.use('/api', speedLimiter);
 // Only credential endpoints get the strict limiter; /api/auth/me runs on every
 // page load and must not lock users out.
 app.use('/api/auth/login', loginLimiter);
+app.use('/api/domains/authorize', domainAuthorizationLimiter);
 app.use(
   [
     '/api/auth/register',
@@ -202,10 +329,34 @@ app.use(
 app.use('/api/ai', aiLimiter);
 app.use('/api', limiter);
 
-app.set('trust proxy', 1);
-
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok' });
+});
+
+const globalOnlyOrgRoutes = new Set([
+  'my-courses', 'progress', 'notes', 'community', 'stats', 'quizzes', 'sanaweya',
+  'notifications', 'search', 'payments',
+]);
+app.use('/api', (req, res, next) => {
+  const section = req.path.split('/').filter(Boolean)[0];
+  if (req.organization && section && globalOnlyOrgRoutes.has(section)) {
+    return res.status(404).json({ message: 'This feature is not available in the organization learning space.' });
+  }
+  return next();
+});
+app.use('/api', async (req, res, next) => {
+  if (!req.cookies?.session_id || req.path.startsWith('/auth/')) return next();
+  try {
+    const [row] = await db.select({ mustChangePassword: users.mustChangePassword }).from(sessions)
+      .innerJoin(users, eq(sessions.userId, users.id))
+      .where(and(eq(sessions.id, req.cookies.session_id), gt(sessions.expiresAt, new Date()))).limit(1);
+    if (row?.mustChangePassword && req.path !== '/auth/password' && req.method !== 'OPTIONS') {
+      return res.status(403).json({ message: 'Change your password before continuing.', code: 'PASSWORD_CHANGE_REQUIRED' });
+    }
+    return next();
+  } catch (err) {
+    return next(err);
+  }
 });
 
 app.use('/api/auth', authRouter);
@@ -224,6 +375,19 @@ app.use('/api/notifications', notificationsRouter);
 app.use('/api/search', searchRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/payments', paymentsRouter);
+app.use('/api/organizations', organizationsRouter);
+app.use('/api/domains', domainAuthorizationRouter);
+
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (res.headersSent) return;
+  const status = typeof err === 'object' && err !== null && 'status' in err && typeof err.status === 'number'
+    ? err.status
+    : 500;
+  if (status >= 500) console.error('Unhandled request error', err);
+  return res.status(status >= 400 && status < 600 ? status : 500).json({
+    message: status === 413 ? 'Request body is too large.' : status === 400 ? 'Invalid request.' : 'Internal server error.',
+  });
+});
 
 const PORT = Number(process.env.PORT) || 3001;
 
