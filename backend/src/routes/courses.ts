@@ -13,7 +13,7 @@ import {
   orgMemberships,
 } from '../db/schema';
 import { isUserAllowedInOrganization, requireAuth, requireRole } from '../middleware/requireAuth';
-import { enrollStudent } from '../lib/enrollment';
+import { enrollStudent, fanOutBookingsForEnrollment, cancelOfflineEnrollment } from '../lib/enrollment';
 
 const router = Router();
 
@@ -198,7 +198,11 @@ router.get('/:id', async (req: Request, res: Response) => {
         ? await db
             .select({ id: enrollments.id })
             .from(enrollments)
-            .where(and(eq(enrollments.studentId, currentUserId), eq(enrollments.courseId, course.id)))
+            .where(and(
+              eq(enrollments.studentId, currentUserId),
+              eq(enrollments.courseId, course.id),
+              eq(enrollments.status, 'active'),
+            ))
             .limit(1)
         : [];
       if (enrolledRows.length === 0) {
@@ -211,7 +215,11 @@ router.get('/:id', async (req: Request, res: Response) => {
       const enr = await db
         .select()
         .from(enrollments)
-        .where(and(eq(enrollments.studentId, currentUserId), eq(enrollments.courseId, id)))
+        .where(and(
+          eq(enrollments.studentId, currentUserId),
+          eq(enrollments.courseId, id),
+          eq(enrollments.status, 'active'),
+        ))
         .limit(1);
       if (enr.length > 0) {
         isEnrolled = true;
@@ -353,7 +361,7 @@ router.post('/:id/reviews', requireAuth, async (req: Request, res: Response) => 
     const enrollment = await db
       .select({ id: enrollments.id })
       .from(enrollments)
-      .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, courseId.data)))
+      .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, courseId.data), eq(enrollments.status, 'active')))
       .limit(1);
     if (enrollment.length === 0) {
       return res.status(403).json({ message: 'Only students enrolled in this course can review it.' });
@@ -391,17 +399,37 @@ router.post('/:id/enroll', requireAuth, async (req: Request, res: Response) => {
     }
 
     const course = courseRows[0];
-    if (course.deliveryMode === 'offline') {
-      return res.status(400).json({ message: 'Offline courses are booking only and cannot be enrolled in online.' });
-    }
 
     const existing = await db
       .select()
       .from(enrollments)
       .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, id)))
       .limit(1);
-    if (existing.length > 0) {
+    if (existing.length > 0 && existing[0].status === 'active') {
       return res.status(409).json({ message: 'Already enrolled' });
+    }
+
+    if (course.deliveryMode === 'offline') {
+      // Semester-style enrollment: free in the UI (payment is marked at the
+      // venue), capacity capped by the course's default session seat count.
+      // Each active enrollee rosters onto every future scheduled session.
+      if (course.capacity != null) {
+        const [{ value: activeCount }] = await db
+          .select({ value: count(enrollments.id) })
+          .from(enrollments)
+          .where(and(eq(enrollments.courseId, id), eq(enrollments.kind, 'offline_semester'), eq(enrollments.status, 'active')));
+        if (Number(activeCount) >= course.capacity) {
+          return res.status(409).json({ message: 'This course is full. Try booking individual sessions as a drop-in.' });
+        }
+      }
+      const { enrollment } = await enrollStudent(studentId, course, 'offline_semester');
+      if (!enrollment) return res.status(409).json({ message: 'Already enrolled' });
+      try {
+        await fanOutBookingsForEnrollment(studentId, course.id);
+      } catch (fanOutErr) {
+        console.error('offline enrollment fan-out failed', fanOutErr);
+      }
+      return res.status(201).json({ enrollment });
     }
 
     // Paid courses are only enrolled through a confirmed payment (POST /api/payments/checkout).
@@ -414,6 +442,34 @@ router.post('/:id/enroll', requireAuth, async (req: Request, res: Response) => {
     return res.status(201).json({ enrollment });
   } catch (err) {
     console.error('enroll error', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Student cancels their offline semester enrollment. Future bookings are
+// cancelled and any seats they freed are offered to the waitlist, same rule
+// a single-session cancel uses.
+router.delete('/:id/enroll', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const parsedCourseId = z.string().uuid().safeParse(req.params.id);
+    if (!parsedCourseId.success) return res.status(400).json({ message: 'Invalid course id' });
+    const id = parsedCourseId.data;
+    const studentId = req.user!.id;
+    if (!(await courseBelongsToRequestScope(req, studentId, id))) return res.status(404).json({ message: 'Course not found' });
+
+    const [row] = await db
+      .select({ id: enrollments.id, kind: enrollments.kind, status: enrollments.status })
+      .from(enrollments)
+      .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, id)))
+      .limit(1);
+    if (!row || row.status !== 'active') return res.status(404).json({ message: 'Active enrollment not found.' });
+    if (row.kind !== 'offline_semester') {
+      return res.status(400).json({ message: 'Online enrollments cannot be cancelled from here.' });
+    }
+    await cancelOfflineEnrollment(studentId, id);
+    return res.json({ message: 'Enrollment cancelled.' });
+  } catch (err) {
+    console.error('cancel enrollment error', err);
     return res.status(500).json({ message: 'Internal server error' });
   }
 });
@@ -431,7 +487,7 @@ export async function myCoursesHandler(req: Request, res: Response) {
       .from(enrollments)
       .innerJoin(courses, eq(enrollments.courseId, courses.id))
       .innerJoin(users, eq(courses.instructorId, users.id))
-      .where(eq(enrollments.studentId, studentId))
+      .where(and(eq(enrollments.studentId, studentId), eq(enrollments.status, 'active')))
       .orderBy(sql`${enrollments.enrolledAt} desc`);
 
     const ids = rows.map((r) => r.course.id);
@@ -496,7 +552,7 @@ router.get(
         const enr = await db
           .select()
           .from(enrollments)
-          .where(and(eq(enrollments.studentId, userId), eq(enrollments.courseId, courseId)))
+          .where(and(eq(enrollments.studentId, userId), eq(enrollments.courseId, courseId), eq(enrollments.status, 'active')))
           .limit(1);
         if (enr.length === 0) {
           return res.status(403).json({ message: 'Not enrolled in this course' });

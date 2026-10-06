@@ -149,12 +149,25 @@ const profileSchema = z.object({
   avatarUrl: z.string().url().max(2048).optional(),
 });
 
+// Egyptian numbers plus a general international shape; we store what the user
+// typed after trimming, but only accept 7–20 characters of digits, spaces,
+// '+', '-', '(', ')'. The CSV later renders it verbatim.
+const PHONE_PATTERN = /^[+()\-\s0-9]{7,20}$/;
+
 router.post('/register', async (req: Request, res: Response) => {
   try {
-    const { name, email, password, role, grade } = req.body ?? {};
+    const { name, email, password, role, grade, phone } = req.body ?? {};
 
     if (!name || !email || !password) {
       return res.status(400).json({ message: 'All required fields must be provided' });
+    }
+
+    const trimmedPhone = typeof phone === 'string' ? phone.trim() : '';
+    if (!trimmedPhone) {
+      return res.status(400).json({ message: 'A contact phone number is required.' });
+    }
+    if (!PHONE_PATTERN.test(trimmedPhone)) {
+      return res.status(400).json({ message: 'Enter a valid phone number (digits, +, -, spaces).' });
     }
 
     // Public sign-up is students only. Instructors apply via /register-instructor
@@ -199,6 +212,7 @@ router.post('/register', async (req: Request, res: Response) => {
           passwordHash,
           role: 'student',
           grade: grade ? String(grade).trim().slice(0, 255) : null,
+          phone: trimmedPhone.slice(0, 32),
         })
         .returning();
 

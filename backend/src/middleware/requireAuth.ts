@@ -29,6 +29,7 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
         role: users.role,
         avatarUrl: users.avatarUrl,
         grade: users.grade,
+        phone: users.phone,
         instructorStatus: users.instructorStatus,
         mustChangePassword: users.mustChangePassword,
         preferredLanguage: users.preferredLanguage,

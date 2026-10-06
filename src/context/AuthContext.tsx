@@ -64,7 +64,7 @@ interface AuthContextValue {
   user: User | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, password: string, grade?: string) => Promise<void>;
+  register: (name: string, email: string, password: string, phone: string, grade?: string) => Promise<void>;
   applyToTeach: (input: InstructorApplicationInput) => Promise<void>;
   refreshUser: () => Promise<User | null>;
   logout: () => Promise<void>;
@@ -125,9 +125,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Public sign-up creates students only; teachers use applyToTeach.
   const register = useCallback(
-    async (name: string, email: string, password: string, grade?: string) => {
+    async (name: string, email: string, password: string, phone: string, grade?: string) => {
       try {
-        const { data } = await api.post('/api/auth/register', { name, email, password, grade });
+        const { data } = await api.post('/api/auth/register', { name, email, password, phone, grade });
         setUser(data.user);
         navigate(homePathFor(data.user));
       } catch (err: any) {

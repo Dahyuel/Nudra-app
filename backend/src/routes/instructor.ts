@@ -311,8 +311,8 @@ router.post('/courses', async (req: Request, res: Response) => {
     if (!parsed.success) {
       return res.status(400).json({ message: 'Invalid course data', errors: parsed.error.flatten() });
     }
-    if ((parsed.data.delivery_mode ?? 'online') === 'offline' && (!parsed.data.location || !parsed.data.schedule_text || !parsed.data.booking_url)) {
-      return res.status(400).json({ message: 'Offline courses need a location, schedule, and booking page URL.' });
+    if ((parsed.data.delivery_mode ?? 'online') === 'offline' && (!parsed.data.location || !parsed.data.schedule_text)) {
+      return res.status(400).json({ message: 'Offline courses need a location and schedule.' });
     }
 
     const {
@@ -388,10 +388,9 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
     const resultingDeliveryMode = parsed.data.delivery_mode ?? existing[0].deliveryMode;
     if (resultingDeliveryMode === 'offline' && (
       !(parsed.data.location ?? existing[0].location) ||
-      !(parsed.data.schedule_text ?? existing[0].scheduleText) ||
-      !(parsed.data.booking_url ?? existing[0].bookingUrl)
+      !(parsed.data.schedule_text ?? existing[0].scheduleText)
     )) {
-      return res.status(400).json({ message: 'Offline courses need a location, schedule, and booking page URL.' });
+      return res.status(400).json({ message: 'Offline courses need a location and schedule.' });
     }
 
     const organizationSubmissionChanged = req.user!.organizationId !== null && Object.keys(parsed.data).length > 0;
@@ -431,6 +430,7 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
     if (location !== undefined) updateValues.location = location;
     if (booking_url !== undefined) updateValues.bookingUrl = booking_url;
     if (schedule_text !== undefined) updateValues.scheduleText = schedule_text;
+    if (capacity !== undefined) updateValues.capacity = capacity;
     if (capacity !== undefined) updateValues.capacity = capacity;
     if (resultingDeliveryMode === 'offline') updateValues.price = '0';
     if (organizationSubmissionChanged) {
@@ -635,13 +635,14 @@ router.delete('/courses/:id', async (req: Request, res: Response) => {
       });
     }
 
-    const [{ value: bookingCount }] = await db.execute(sql`SELECT COUNT(b.id)::int AS value
+    const bookingCountResult = await db.execute(sql`SELECT COUNT(b.id)::int AS value
       FROM course_sessions s JOIN course_bookings b ON b.session_id=s.id
-      WHERE s.course_id=${course.id}`) as unknown as [{ value: number | string }];
-    if (Number(bookingCount) > 0) {
+      WHERE s.course_id=${course.id}`);
+    const bookingCount = Number((bookingCountResult as { rows?: Array<{ value?: number | string }> }).rows?.[0]?.value ?? 0);
+    if (bookingCount > 0) {
       return res.status(409).json({
         message: 'This course has booking history, so it can’t be deleted. Unpublish it to keep its attendance and reservation records.',
-        bookingCount: Number(bookingCount),
+        bookingCount,
       });
     }
 

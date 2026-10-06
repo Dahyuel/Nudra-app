@@ -123,6 +123,10 @@ export const UploadCoursePage: React.FC = () => {
   const [location, setLocation] = useState('');
   const [bookingUrl, setBookingUrl] = useState('');
   const [scheduleText, setScheduleText] = useState('');
+  // Default seats per session for an offline course. Stored on the course so
+  // the instructor only sets it once; each session can still be overridden
+  // in the Offline course sessions panel.
+  const [maxSeats, setMaxSeats] = useState('');
 
   // API state
   const [courseId, setCourseId] = useState<string | null>(null);
@@ -166,6 +170,7 @@ export const UploadCoursePage: React.FC = () => {
         setLocation((c as any).location || '');
         setBookingUrl((c as any).bookingUrl || '');
         setScheduleText((c as any).scheduleText || '');
+        setMaxSeats((c as any).capacity != null ? String((c as any).capacity) : '');
 
         // Stored as price = what students pay, originalPrice = struck-through full price.
         const price = Number(c.price) || 0;
@@ -563,19 +568,8 @@ export const UploadCoursePage: React.FC = () => {
     setError(null);
     setIsSubmitting(true);
     try {
-      if (deliveryMode === 'offline' && currentStep === 1) {
-        const basicInfo = { title: title || 'Untitled Course', description: description || 'Offline course booking.', category: subject, level: 'All Levels', thumbnail_url: thumbnailUrl, delivery_mode: 'offline', location: location || undefined, booking_url: bookingUrl || undefined, schedule_text: scheduleText || undefined, price: 0 };
-        if (courseId) await api.put(`/api/instructor/courses/${courseId}`, basicInfo);
-        else { const { data } = await api.post('/api/instructor/courses', basicInfo); setCourseId(data.course.id); }
-        setCurrentStep(4);
-        return;
-      }
-      if (deliveryMode === 'offline' && currentStep === 4 && courseId) {
-        await api.put(`/api/instructor/courses/${courseId}`, { delivery_mode: 'offline', location: location || undefined, booking_url: bookingUrl || undefined, schedule_text: scheduleText || undefined, price: 0 });
-        setCurrentStep(4);
-        return;
-      }
       if (currentStep === 1) {
+        const seats = Number(maxSeats);
         const basicInfo = {
           title: title || 'Untitled Masterclass',
           description: description || 'Comprehensive curriculum with video lessons.',
@@ -585,6 +579,9 @@ export const UploadCoursePage: React.FC = () => {
           location: location || undefined,
           booking_url: bookingUrl || undefined,
           schedule_text: scheduleText || undefined,
+          // Only offline courses have a default seat count; the backend
+          // ignores it for online courses (there's no in-person capacity).
+          capacity: deliveryMode === 'offline' && Number.isInteger(seats) && seats > 0 ? seats : undefined,
         };
         if (courseId) {
           // Editing, or came Back to step 1: update instead of creating a duplicate course.
@@ -594,7 +591,6 @@ export const UploadCoursePage: React.FC = () => {
           setCourseId(data.course.id);
         }
       } else if (currentStep === 2 && courseId) {
-        if (deliveryMode === 'offline') { setCurrentStep(3); return; }
         const oldSections = sections;
         // Saved sections/lessons carry their id so the server updates them in place
         // (keeping videos, quizzes and student progress) instead of re-creating them.
@@ -641,7 +637,7 @@ export const UploadCoursePage: React.FC = () => {
           }
         }
         setPendingVideoFiles({});
-      } else if (currentStep === 3 && courseId && deliveryMode === 'online') {
+      } else if (currentStep === 3 && courseId) {
         // Students pay the discounted price; the full price is the struck-through
         // "original" price (these used to be saved the other way round).
         const hasDiscount = !isFree && discountPercent > 0;
@@ -833,7 +829,7 @@ export const UploadCoursePage: React.FC = () => {
                       : 'text-gray-400 group-hover:text-gray-600'
                   }`}
                 >
-                  Step {s.step}: {deliveryMode === 'offline' ? ({ 1: 'Details', 2: 'Not used', 3: 'Not used', 4: 'Submit' } as Record<number, string>)[s.step] : s.label}
+                  Step {s.step}: {s.label}
                 </span>
               </div>
             );
@@ -887,7 +883,7 @@ export const UploadCoursePage: React.FC = () => {
                   </select>
                   {user?.organizationContext && <p className="mt-1 text-xs text-amber-700">Your organization manager must approve this submission before students can see it.</p>}
                 </div>
-                {deliveryMode === 'offline' && <div className="grid gap-4 sm:grid-cols-2"><label className="text-xs font-bold text-gray-700">Location<input required value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Address or venue" className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm font-normal" /></label><label className="text-xs font-bold text-gray-700">Schedule<input required value={scheduleText} onChange={(e) => setScheduleText(e.target.value)} placeholder="Days and times" className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm font-normal" /></label><label className="text-xs font-bold text-gray-700 sm:col-span-2">Booking URL<input required type="url" value={bookingUrl} onChange={(e) => setBookingUrl(e.target.value)} placeholder="https://..." className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm font-normal" /></label></div>}
+                {deliveryMode === 'offline' && <div className="grid gap-4 sm:grid-cols-2"><label className="text-xs font-bold text-gray-700">Location<input required value={location} onChange={(e) => setLocation(e.target.value)} placeholder="Address or venue" className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm font-normal" /></label><label className="text-xs font-bold text-gray-700">Schedule<input required value={scheduleText} onChange={(e) => setScheduleText(e.target.value)} placeholder="Days and times" className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm font-normal" /></label><label className="text-xs font-bold text-gray-700 sm:col-span-2">Max seats per session <span className="font-normal text-gray-500">(the default capacity for every session you add to this course — you can still change it per session)</span><input required type="number" min={1} max={10000} step={1} value={maxSeats} onChange={(e) => setMaxSeats(e.target.value)} placeholder="e.g. 20" className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm font-normal" /></label><label className="text-xs font-bold text-gray-700 sm:col-span-2">External booking link <span className="font-normal text-gray-500">(optional — only if you want students sent to an outside form instead of booking through Nudra)</span><input type="url" value={bookingUrl} onChange={(e) => setBookingUrl(e.target.value)} placeholder="https://..." className="mt-1 w-full rounded-xl border border-gray-200 px-4 py-3 text-sm font-normal" /></label></div>}
                 <div>
                   <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
                     Course Title
@@ -963,12 +959,12 @@ export const UploadCoursePage: React.FC = () => {
           {currentStep === 4 && user?.organizationContext && <div className="rounded-xl border border-blue-100 bg-blue-50 p-5 text-sm text-blue-900">Your course details are saved. Submitting sends it to your organization manager for approval. It will appear to students after approval and publication.</div>}
 
           {/* STEP 2: CURRICULUM (Add Sections, Add Lessons, Upload Video) */}
-          {currentStep === 2 && deliveryMode === 'online' && (
+          {currentStep === 2 && (
             <div className="space-y-6 animate-in fade-in duration-150">
               <div className="flex items-center justify-between pb-3 border-b border-gray-100">
                 <h3 className="font-bold text-base text-[#1B1B1B] flex items-center gap-2">
                   <Video className="w-4 h-4 text-[#2D6A4F]" />
-                  <span>Step 2: Course Syllabus & Video Lessons</span>
+                  <span>Step 2: {deliveryMode === 'offline' ? 'Session Plan & Topics' : 'Course Syllabus & Video Lessons'}</span>
                 </h3>
                 <button
                   type="button"
@@ -1046,29 +1042,31 @@ export const UploadCoursePage: React.FC = () => {
                             </div>
                           </div>
 
-                          {/* Video Upload input */}
-                          <div className="flex items-center gap-3 text-xs text-gray-500 bg-[#F8FAF9] p-2.5 rounded-lg border border-dashed border-gray-200">
-                            <Upload className="w-4 h-4 text-[#2D6A4F]" />
-                            <div className="flex-1 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                              <div className="flex items-center gap-2 min-w-0">
-                                <span className="truncate font-semibold">
-                                  {lesson.videoFileName || 'No video selected (MP4, MOV, MKV, WebM, AVI up to 2GB)'}
-                                </span>
-                                {getVideoStatusLabel(lesson.id)}
+                          {/* Video Upload input (online only; offline sessions have no videos) */}
+                          {deliveryMode === 'online' && (
+                            <div className="flex items-center gap-3 text-xs text-gray-500 bg-[#F8FAF9] p-2.5 rounded-lg border border-dashed border-gray-200">
+                              <Upload className="w-4 h-4 text-[#2D6A4F]" />
+                              <div className="flex-1 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className="truncate font-semibold">
+                                    {lesson.videoFileName || 'No video selected (MP4, MOV, MKV, WebM, AVI up to 2GB)'}
+                                  </span>
+                                  {getVideoStatusLabel(lesson.id)}
+                                </div>
+                                <label className="cursor-pointer text-[11px] font-bold text-[#2D6A4F] bg-white px-2.5 py-1 rounded-md border border-emerald-200 hover:bg-emerald-50 shrink-0">
+                                  Upload Video
+                                  <input
+                                    type="file"
+                                    accept="video/*"
+                                    className="sr-only"
+                                    onChange={(e) => {
+                                      handleVideoFileSelect(section.id, lesson.id, e.target.files?.[0]);
+                                    }}
+                                  />
+                                </label>
                               </div>
-                              <label className="cursor-pointer text-[11px] font-bold text-[#2D6A4F] bg-white px-2.5 py-1 rounded-md border border-emerald-200 hover:bg-emerald-50 shrink-0">
-                                Upload Video
-                                <input
-                                  type="file"
-                                  accept="video/*"
-                                  className="sr-only"
-                                  onChange={(e) => {
-                                    handleVideoFileSelect(section.id, lesson.id, e.target.files?.[0]);
-                                  }}
-                                />
-                              </label>
                             </div>
-                          </div>
+                          )}
 
                           {/* Quiz builder toggle */}
                           <div className="flex items-center justify-between gap-2 pt-0.5">
@@ -1201,7 +1199,7 @@ export const UploadCoursePage: React.FC = () => {
           )}
 
           {/* STEP 3: PRICING (Free/Paid toggle, Price in EGP, Discount %) */}
-          {currentStep === 3 && deliveryMode === 'online' && (
+          {currentStep === 3 && (
             <div className="space-y-6 animate-in fade-in duration-150">
               <h3 className="font-bold text-base text-[#1B1B1B] pb-3 border-b border-gray-100 flex items-center gap-2">
                 <DollarSign className="w-4 h-4 text-[#2D6A4F]" />
@@ -1321,7 +1319,12 @@ export const UploadCoursePage: React.FC = () => {
                     <span className="text-xl font-black text-[#2D6A4F]">
                       {isFree ? 'Free' : `${priceEgp} EGP`}
                     </span>
-                    {!isFree && discountPercent > 0 && (
+                    {deliveryMode === 'offline' && !isFree && (
+                      <span className="block text-[11px] text-gray-500 font-semibold">
+                        Pay at venue or online
+                      </span>
+                    )}
+                    {deliveryMode !== 'offline' && !isFree && discountPercent > 0 && (
                       <span className="block text-[11px] text-amber-600 font-bold">
                         {discountPercent}% Promo Applied
                       </span>
@@ -1390,7 +1393,7 @@ export const UploadCoursePage: React.FC = () => {
                   <span className="w-4 h-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
                 ) : (
                   <>
-                    <span>Continue to Step {deliveryMode === 'offline' && currentStep === 1 ? 4 : currentStep + 1}</span>
+                    <span>Continue to Step {currentStep + 1}</span>
                     <ChevronRight className="w-4 h-4" />
                   </>
                 )}

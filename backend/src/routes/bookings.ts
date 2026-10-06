@@ -3,6 +3,7 @@ import { SQL, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { requireAuth } from '../middleware/requireAuth';
+import { fanOutEnrolleesToSession } from '../lib/enrollment';
 
 const router = Router();
 const uuid = z.string().uuid();
@@ -73,9 +74,14 @@ router.post('/courses/:courseId/sessions', requireAuth, async (req: Request, res
       FROM courses c WHERE c.id=${courseId.data}
         AND c.organization_id IS NOT DISTINCT FROM ${req.organization?.id ?? null}::uuid
         AND c.delivery_mode='offline' AND c.approval_status='approved'
-      RETURNING id, course_id AS "courseId", starts_at AS "startsAt", ends_at AS "endsAt", capacity, location, status`);
-    const session = rowsOf(result)[0];
-    if (!session) return res.status(409).json({ message: 'Only approved offline courses can have bookable sessions.' });
+      RETURNING id, course_id AS "courseId", organization_id AS "organizationId", starts_at AS "startsAt", ends_at AS "endsAt", capacity, location, status`);
+    const session = rowsOf(result)[0] as { id?: string; courseId?: string; organizationId?: string | null } | undefined;
+    if (!session?.id || !session.courseId) return res.status(409).json({ message: 'Only approved offline courses can have bookable sessions.' });
+    try {
+      await fanOutEnrolleesToSession(String(session.id), String(session.courseId), session.organizationId ?? null);
+    } catch (fanOutErr) {
+      console.error('session fan-out to enrollees failed', fanOutErr);
+    }
     return res.status(201).json({ session });
   } catch (error) {
     console.error('create booking session failed', error);
@@ -112,12 +118,132 @@ router.get('/sessions/:sessionId/roster', requireAuth, async (req: Request, res:
   if (!session) return res.status(404).json({ message: 'Session not found.' });
   if (!(await canManageCourse(req, String(session.course_id)))) return res.status(403).json({ message: 'Course manager or instructor access required.' });
   const result = await db.execute(sql`SELECT b.id, b.status, b.waitlist_position AS "waitlistPosition",
-      b.booked_at AS "bookedAt", u.id AS "studentId", u.name AS "studentName", u.email AS "studentEmail"
+      b.booked_at AS "bookedAt", b.payment_method AS "paymentMethod", b.payment_status AS "paymentStatus",
+      u.id AS "studentId", u.name AS "studentName", u.email AS "studentEmail", u.phone AS "studentPhone",
+      sp.grade AS "studyYear"
     FROM course_bookings b JOIN users u ON u.id=b.student_id
+    LEFT JOIN sanaweya_profiles sp ON sp.user_id=u.id
     WHERE b.session_id=${sessionId.data} AND b.organization_id IS NOT DISTINCT FROM ${req.organization?.id ?? null}::uuid
     ORDER BY CASE b.status WHEN 'confirmed' THEN 0 WHEN 'waitlisted' THEN 1 ELSE 2 END,
       b.waitlist_position NULLS LAST, b.booked_at`);
   return res.json({ roster: rowsOf(result) });
+});
+
+// Instructor-only. Flip a confirmed booking's payment_status. Covers both
+// 'offline' bookings being marked paid at the venue and ad-hoc refunds/waivers.
+router.patch('/sessions/:sessionId/roster/:bookingId/payment', requireAuth, async (req: Request, res: Response) => {
+  const sessionId = uuid.safeParse(req.params.sessionId);
+  const bookingId = uuid.safeParse(req.params.bookingId);
+  const status = z.enum(['pending', 'paid', 'refunded', 'waived']).safeParse(req.body?.status);
+  if (!sessionId.success || !bookingId.success || !status.success) return res.status(400).json({ message: 'Choose a valid payment status for a valid booking.' });
+  const sessionResult = await db.execute(sql`SELECT course_id FROM course_sessions WHERE id=${sessionId.data}
+    AND organization_id IS NOT DISTINCT FROM ${req.organization?.id ?? null}::uuid LIMIT 1`);
+  const session = rowsOf(sessionResult)[0];
+  if (!session) return res.status(404).json({ message: 'Session not found.' });
+  if (!(await canManageCourse(req, String(session.course_id)))) return res.status(403).json({ message: 'Course manager or instructor access required.' });
+  const updated = await db.execute(sql`UPDATE course_bookings SET payment_status=${status.data}, updated_at=now()
+    WHERE id=${bookingId.data} AND session_id=${sessionId.data}
+      AND organization_id IS NOT DISTINCT FROM ${req.organization?.id ?? null}::uuid
+    RETURNING id, payment_method AS "paymentMethod", payment_status AS "paymentStatus"`);
+  const booking = rowsOf(updated)[0];
+  if (!booking) return res.status(404).json({ message: 'Booking not found.' });
+  return res.json({ booking });
+});
+
+// Escape a cell for CSV: wrap in quotes and double any embedded quotes.
+// Guard against formula injection in Excel/Numbers by prefixing a leading '
+// if the first character would otherwise be interpreted as a formula.
+function csvCell(value: unknown): string {
+  const text = value === null || value === undefined ? '' : String(value);
+  const guarded = /^[=+\-@]/.test(text) ? `'${text}` : text;
+  return `"${guarded.replace(/"/g, '""')}"`;
+}
+
+function csvRow(cells: unknown[]): string {
+  return cells.map(csvCell).join(',') + '\r\n';
+}
+
+function formatCsvDate(value: unknown): string {
+  if (!value) return '';
+  const date = new Date(String(value));
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+}
+
+const CSV_HEADER = [
+  'Student name', 'Email', 'Phone', 'Study year',
+  'Course', 'Session starts', 'Session ends', 'Location',
+  'Booking status', 'Waitlist position',
+  'Payment method', 'Payment status', 'Booked at',
+];
+
+type RosterCsvRow = Record<string, unknown>;
+
+function serializeCsv(rows: RosterCsvRow[]): string {
+  const body = rows.map((row) => csvRow([
+    row.studentName, row.studentEmail, row.studentPhone, row.studyYear,
+    row.courseTitle, formatCsvDate(row.sessionStartsAt), formatCsvDate(row.sessionEndsAt), row.sessionLocation,
+    row.status, row.waitlistPosition ?? '',
+    row.paymentMethod ?? '', row.paymentStatus ?? '', formatCsvDate(row.bookedAt),
+  ])).join('');
+  // UTF-8 BOM so Excel renders Arabic text correctly on open.
+  return '﻿' + csvRow(CSV_HEADER) + body;
+}
+
+function sendCsv(res: Response, filename: string, body: string) {
+  res.set({
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="${filename.replace(/"/g, '')}"`,
+  });
+  res.send(body);
+}
+
+router.get('/sessions/:sessionId/roster.csv', requireAuth, async (req: Request, res: Response) => {
+  const sessionId = uuid.safeParse(req.params.sessionId);
+  if (!sessionId.success) return res.status(400).json({ message: 'Invalid session.' });
+  const sessionResult = await db.execute(sql`SELECT s.id, s.course_id, s.starts_at, s.ends_at, s.location, c.title AS course_title
+    FROM course_sessions s JOIN courses c ON c.id=s.course_id
+    WHERE s.id=${sessionId.data} AND s.organization_id IS NOT DISTINCT FROM ${req.organization?.id ?? null}::uuid LIMIT 1`);
+  const session = rowsOf(sessionResult)[0];
+  if (!session) return res.status(404).json({ message: 'Session not found.' });
+  if (!(await canManageCourse(req, String(session.course_id)))) return res.status(403).json({ message: 'Course manager or instructor access required.' });
+  const rows = await db.execute(sql`SELECT u.name AS "studentName", u.email AS "studentEmail", u.phone AS "studentPhone",
+      sp.grade AS "studyYear", b.status, b.waitlist_position AS "waitlistPosition",
+      b.payment_method AS "paymentMethod", b.payment_status AS "paymentStatus", b.booked_at AS "bookedAt"
+    FROM course_bookings b JOIN users u ON u.id=b.student_id
+    LEFT JOIN sanaweya_profiles sp ON sp.user_id=u.id
+    WHERE b.session_id=${sessionId.data} AND b.organization_id IS NOT DISTINCT FROM ${req.organization?.id ?? null}::uuid
+    ORDER BY CASE b.status WHEN 'confirmed' THEN 0 WHEN 'waitlisted' THEN 1 ELSE 2 END,
+      b.waitlist_position NULLS LAST, b.booked_at`);
+  const enriched: RosterCsvRow[] = rowsOf(rows).map((row) => ({
+    ...row,
+    courseTitle: session.course_title,
+    sessionStartsAt: session.starts_at,
+    sessionEndsAt: session.ends_at,
+    sessionLocation: session.location,
+  }));
+  const stamp = new Date().toISOString().slice(0, 10);
+  sendCsv(res, `session-${sessionId.data}-${stamp}.csv`, serializeCsv(enriched));
+});
+
+router.get('/manage/courses/:courseId/bookings.csv', requireAuth, async (req: Request, res: Response) => {
+  const courseId = uuid.safeParse(req.params.courseId);
+  if (!courseId.success) return res.status(400).json({ message: 'Invalid course.' });
+  if (!(await canManageCourse(req, courseId.data))) return res.status(403).json({ message: 'Course manager or instructor access required.' });
+  const rows = await db.execute(sql`SELECT u.name AS "studentName", u.email AS "studentEmail", u.phone AS "studentPhone",
+      sp.grade AS "studyYear", b.status, b.waitlist_position AS "waitlistPosition",
+      b.payment_method AS "paymentMethod", b.payment_status AS "paymentStatus", b.booked_at AS "bookedAt",
+      c.title AS "courseTitle", s.starts_at AS "sessionStartsAt", s.ends_at AS "sessionEndsAt", s.location AS "sessionLocation"
+    FROM course_bookings b
+    JOIN course_sessions s ON s.id=b.session_id
+    JOIN courses c ON c.id=b.course_id
+    JOIN users u ON u.id=b.student_id
+    LEFT JOIN sanaweya_profiles sp ON sp.user_id=u.id
+    WHERE b.course_id=${courseId.data} AND b.organization_id IS NOT DISTINCT FROM ${req.organization?.id ?? null}::uuid
+    ORDER BY s.starts_at ASC,
+      CASE b.status WHEN 'confirmed' THEN 0 WHEN 'waitlisted' THEN 1 ELSE 2 END,
+      b.waitlist_position NULLS LAST, b.booked_at`);
+  const stamp = new Date().toISOString().slice(0, 10);
+  sendCsv(res, `course-${courseId.data}-bookings-${stamp}.csv`, serializeCsv(rowsOf(rows) as RosterCsvRow[]));
 });
 
 router.patch('/sessions/:sessionId/roster/:bookingId/attendance', requireAuth, async (req: Request, res: Response) => {
@@ -142,15 +268,77 @@ router.patch('/sessions/:sessionId/roster/:bookingId/attendance', requireAuth, a
   return res.json({ booking });
 });
 
+// Instructor-side list of semester enrollees for an offline course.
+router.get('/manage/courses/:courseId/enrollments', requireAuth, async (req: Request, res: Response) => {
+  const courseId = uuid.safeParse(req.params.courseId);
+  if (!courseId.success) return res.status(400).json({ message: 'Invalid course.' });
+  if (!(await canManageCourse(req, courseId.data))) return res.status(403).json({ message: 'Course manager or instructor access required.' });
+  const result = await db.execute(sql`
+    SELECT e.id, e.enrolled_at AS "enrolledAt", e.status, u.id AS "studentId", u.name AS "studentName",
+      u.email AS "studentEmail", u.phone AS "studentPhone", sp.grade AS "studyYear",
+      COUNT(b.id) FILTER (WHERE b.status = 'confirmed') ::int AS "confirmedBookings",
+      COUNT(b.id) FILTER (WHERE b.status = 'attended')  ::int AS "attendedCount",
+      COUNT(b.id) FILTER (WHERE b.status = 'no_show')   ::int AS "noShowCount",
+      COUNT(b.id) FILTER (WHERE b.payment_status = 'paid')    ::int AS "paidBookings",
+      COUNT(b.id) FILTER (WHERE b.payment_status = 'pending') ::int AS "pendingBookings"
+    FROM enrollments e
+    JOIN users u ON u.id = e.student_id
+    LEFT JOIN sanaweya_profiles sp ON sp.user_id = u.id
+    LEFT JOIN course_bookings b ON b.course_id = e.course_id AND b.student_id = e.student_id
+    WHERE e.course_id = ${courseId.data} AND e.kind = 'offline_semester'
+    GROUP BY e.id, u.id, sp.grade
+    ORDER BY e.status ASC, e.enrolled_at ASC`);
+  return res.json({ enrollments: rowsOf(result) });
+});
+
+// Student-side list of their own offline semester enrollments.
+router.get('/mine/enrollments', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const result = await db.execute(sql`
+      SELECT e.id, e.enrolled_at AS "enrolledAt", e.status,
+        c.id AS "courseId", c.title AS "courseTitle", c.price AS "coursePrice",
+        c.location AS "courseLocation", c.schedule_text AS "scheduleText", c.thumbnail_url AS "thumbnail",
+        c.category, u.name AS "instructorName",
+        (SELECT COUNT(*) FROM course_bookings b2 JOIN course_sessions s2 ON s2.id = b2.session_id
+          WHERE b2.student_id = ${req.user!.id} AND b2.course_id = e.course_id
+            AND s2.starts_at > now() AND b2.status = 'confirmed')::int AS "upcomingSessions",
+        (SELECT MIN(s3.starts_at) FROM course_bookings b3 JOIN course_sessions s3 ON s3.id = b3.session_id
+          WHERE b3.student_id = ${req.user!.id} AND b3.course_id = e.course_id
+            AND s3.starts_at > now() AND b3.status = 'confirmed') AS "nextSessionAt"
+      FROM enrollments e
+      JOIN courses c ON c.id = e.course_id
+      JOIN users u ON u.id = c.instructor_id
+      WHERE e.student_id = ${req.user!.id}
+        AND e.kind = 'offline_semester'
+        AND e.status = 'active'
+        AND c.organization_id IS NOT DISTINCT FROM ${req.organization?.id ?? null}::uuid
+      ORDER BY e.enrolled_at DESC`);
+    return res.json({ enrollments: rowsOf(result) });
+  } catch (error) {
+    console.error('list offline enrollments failed', error);
+    return res.status(500).json({ message: 'Could not load your enrolled courses.' });
+  }
+});
+
 router.get('/mine', requireAuth, async (req: Request, res: Response) => {
   try {
+    // Drop-in bookings only: a booking is a drop-in when the student is NOT
+    // actively enrolled in the parent course. Enrolled students see their
+    // course in /mine/enrollments and don't need per-session cards.
     const result = await db.execute(sql`SELECT b.id, b.status, b.waitlist_position AS "waitlistPosition",
-        b.booked_at AS "bookedAt", s.starts_at AS "startsAt", s.ends_at AS "endsAt", s.location,
-        c.id AS "courseId", c.title AS "courseTitle", s.id AS "sessionId"
+        b.booked_at AS "bookedAt", b.payment_method AS "paymentMethod", b.payment_status AS "paymentStatus",
+        s.starts_at AS "startsAt", s.ends_at AS "endsAt", s.location,
+        c.id AS "courseId", c.title AS "courseTitle", c.price AS "coursePrice", s.id AS "sessionId"
       FROM course_bookings b JOIN course_sessions s ON s.id=b.session_id JOIN courses c ON c.id=b.course_id
       WHERE b.student_id=${req.user!.id}
         AND b.organization_id IS NOT DISTINCT FROM ${req.organization?.id ?? null}::uuid
-        AND b.status IN ('confirmed','waitlisted') ORDER BY s.starts_at`);
+        AND b.status IN ('confirmed','waitlisted')
+        AND NOT EXISTS (
+          SELECT 1 FROM enrollments e
+          WHERE e.student_id = b.student_id AND e.course_id = b.course_id
+            AND e.kind = 'offline_semester' AND e.status = 'active'
+        )
+      ORDER BY s.starts_at`);
     return res.json({ bookings: rowsOf(result) });
   } catch (error) {
     console.error('list bookings failed', error);
@@ -161,6 +349,15 @@ router.get('/mine', requireAuth, async (req: Request, res: Response) => {
 router.post('/sessions/:sessionId/book', requireAuth, async (req: Request, res: Response) => {
   const sessionId = uuid.safeParse(req.params.sessionId);
   if (!sessionId.success || req.user!.role !== 'student') return res.status(400).json({ message: 'Only a student can book a valid session.' });
+  const bookBody = z.object({
+    paymentMethod: z.enum(['online', 'offline']).default('offline'),
+  }).safeParse(req.body ?? {});
+  if (!bookBody.success) return res.status(400).json({ message: 'Choose how you want to pay for this booking.' });
+  const paymentMethod = bookBody.data.paymentMethod;
+  // Online is a UI stub right now: no gateway, so we flip the booking to
+  // 'paid' immediately. Once a real provider is wired, the booking should
+  // start as 'pending' and only move to 'paid' when the webhook confirms.
+  const paymentStatus = paymentMethod === 'online' ? 'paid' : 'pending';
   try {
     const booking = await db.transaction(async (tx) => {
       const lockedResult = await tx.execute(sql`SELECT s.id, s.course_id, s.organization_id, s.capacity, s.status,
@@ -175,8 +372,8 @@ router.post('/sessions/:sessionId/book', requireAuth, async (req: Request, res: 
       if (req.organization && !(await activeMember(req.organization.id, req.user!.id, tx))) {
         throw new Error('ORG_MEMBERSHIP_REQUIRED');
       }
-      if (Number(session.price) > 0) throw new Error('PAID_OFFLINE_UNAVAILABLE');
-      const priorResult = await tx.execute(sql`SELECT id, status, waitlist_position AS "waitlistPosition"
+      const priorResult = await tx.execute(sql`SELECT id, status, waitlist_position AS "waitlistPosition",
+          payment_method AS "paymentMethod", payment_status AS "paymentStatus"
         FROM course_bookings WHERE session_id=${sessionId.data} AND student_id=${req.user!.id} LIMIT 1`);
       const prior = rowsOf(priorResult)[0];
       if (prior && ['confirmed','waitlisted'].includes(String(prior.status))) return { prior: true, ...prior };
@@ -189,11 +386,13 @@ router.post('/sessions/:sessionId/book', requireAuth, async (req: Request, res: 
       const status = available ? 'confirmed' : 'waitlisted';
       const position = available ? null : Number(stats.last_wait ?? 0) + 1;
       const inserted = await tx.execute(sql`INSERT INTO course_bookings
-          (session_id, course_id, organization_id, student_id, status, waitlist_position)
-        VALUES (${sessionId.data}, ${session.course_id}, ${session.organization_id}, ${req.user!.id}, ${status}, ${position})
+          (session_id, course_id, organization_id, student_id, status, waitlist_position, payment_method, payment_status)
+        VALUES (${sessionId.data}, ${session.course_id}, ${session.organization_id}, ${req.user!.id}, ${status}, ${position}, ${paymentMethod}, ${paymentStatus})
         ON CONFLICT (session_id, student_id) DO UPDATE SET status=EXCLUDED.status,
-          waitlist_position=EXCLUDED.waitlist_position, booked_at=now(), cancelled_at=NULL, updated_at=now()
-        RETURNING id, status, waitlist_position AS "waitlistPosition"`);
+          waitlist_position=EXCLUDED.waitlist_position, payment_method=EXCLUDED.payment_method,
+          payment_status=EXCLUDED.payment_status, booked_at=now(), cancelled_at=NULL, updated_at=now()
+        RETURNING id, status, waitlist_position AS "waitlistPosition",
+          payment_method AS "paymentMethod", payment_status AS "paymentStatus"`);
       return { prior: false, ...rowsOf(inserted)[0] };
     });
     if (!booking) return res.status(404).json({ message: 'This session is no longer available.' });
@@ -201,9 +400,6 @@ router.post('/sessions/:sessionId/book', requireAuth, async (req: Request, res: 
   } catch (error) {
     if (error instanceof Error && error.message === 'ORG_MEMBERSHIP_REQUIRED') {
       return res.status(403).json({ message: 'Organization approval is required before booking.' });
-    }
-    if (error instanceof Error && error.message === 'PAID_OFFLINE_UNAVAILABLE') {
-      return res.status(409).json({ message: 'This offline course requires a payment provider before booking can open.' });
     }
     console.error('book session failed', error);
     return res.status(500).json({ message: 'Could not book this session.' });

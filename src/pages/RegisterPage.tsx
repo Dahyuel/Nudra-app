@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { User, Mail, Lock, GraduationCap, ArrowRight, BookOpen } from 'lucide-react';
+import { User, Mail, Lock, GraduationCap, ArrowRight, BookOpen, Phone } from 'lucide-react';
 import api from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 
@@ -16,6 +16,7 @@ export const RegisterPage: React.FC = () => {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [phone, setPhone] = useState('');
   const [grade, setGrade] = useState('سنة ثالثة ثانوي');
   const [agreeTerms, setAgreeTerms] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +28,7 @@ export const RegisterPage: React.FC = () => {
     setError(null);
 
     try {
-      await register(fullName, email, password, grade);
+      await register(fullName, email, password, phone, grade);
 
       const sanaweyaGrade = SANAWEYA_GRADE_MAP[grade];
 
@@ -102,6 +103,26 @@ export const RegisterPage: React.FC = () => {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="youssef@example.com"
+                className="w-full pl-10 pr-4 py-2.5 text-xs sm:text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-[#2D6A4F] transition-colors"
+              />
+            </div>
+          </div>
+
+          {/* Phone */}
+          <div>
+            <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
+              Phone Number
+            </label>
+            <div className="relative">
+              <Phone className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="tel"
+                required
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="+20 100 123 4567"
+                pattern="[+()\-\s0-9]{7,20}"
+                title="Digits, +, -, spaces (7–20 characters)"
                 className="w-full pl-10 pr-4 py-2.5 text-xs sm:text-sm border border-gray-200 rounded-xl focus:outline-none focus:border-[#2D6A4F] transition-colors"
               />
             </div>

@@ -43,6 +43,10 @@ export const users = pgTable('users', {
   role: roleEnum('role').notNull().default('student'),
   avatarUrl: text('avatar_url'),
   grade: varchar('grade', { length: 255 }),
+  // Contact phone for offline-session instructors + CSV exports. Nullable so
+  // existing accounts can backfill lazily; the register endpoint requires it
+  // for new sign-ups.
+  phone: varchar('phone', { length: 32 }),
   // Instructor approval: 'pending' | 'approved' | 'rejected'. NULL = not an
   // applicant (students) or a legacy/seeded instructor, treated as approved.
   instructorStatus: varchar('instructor_status', { length: 20 }),
@@ -293,6 +297,13 @@ export const enrollments = pgTable(
     enrolledAt: timestamp('enrolled_at').notNull().defaultNow(),
     progress: integer('progress').notNull().default(0),
     lastLessonId: uuid('last_lesson_id').references(() => lessons.id),
+    // 'online' = regular online course enrollment; 'offline_semester' =
+    // tutoring-style enrollment that auto-rosters the student on every future
+    // session for the course. Drop-ins book sessions directly instead.
+    kind: text('kind').notNull().default('online'),
+    // 'active' or 'cancelled'. We keep cancelled rows so the attendance
+    // history stays linked for CSV exports.
+    status: text('status').notNull().default('active'),
   },
   (table) => [unique('enrollments_student_course_unique').on(table.studentId, table.courseId)]
 );

@@ -305,8 +305,8 @@ router.post('/:orgId/courses', requireAuth, async (req: Request, res: Response) 
     scheduleText: z.string().trim().max(2000).optional(), capacity: z.number().int().min(1).max(100000).optional(),
   }).safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ message: 'Enter valid course details and select an active organization instructor.', errors: parsed.error.flatten() });
-  if (parsed.data.deliveryMode === 'offline' && (!parsed.data.location || !parsed.data.scheduleText || !parsed.data.bookingUrl)) {
-    return res.status(400).json({ message: 'Offline courses need a location, schedule, and booking page URL.' });
+  if (parsed.data.deliveryMode === 'offline' && (!parsed.data.location || !parsed.data.scheduleText)) {
+    return res.status(400).json({ message: 'Offline courses need a location and schedule.' });
   }
   const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships)
     .innerJoin(users, eq(orgMemberships.userId, users.id)).where(and(

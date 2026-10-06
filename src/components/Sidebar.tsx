@@ -12,7 +12,6 @@ import {
   ExternalLink,
   GraduationCap,
   Building2,
-  CalendarDays,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import api from '../lib/api';
@@ -31,7 +30,6 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
     { name: 'Academic', path: '/academic', icon: GraduationCap },
     ...(user?.role === 'student' && !user.organizationContext ? [{ name: 'Organizations', path: '/organizations', icon: Building2 }] : []),
     { name: 'My Courses', path: '/my-courses', icon: BookOpen },
-    ...(user?.role === 'student' ? [{ name: 'Bookings', path: '/bookings', icon: CalendarDays }] : []),
     { name: 'Browse', path: '/browse', icon: Compass },
     { name: 'Community', path: '/community', icon: Users },
     { name: 'AI Tutor', path: '/ai-tutor', icon: Sparkles, badge: 'New' },

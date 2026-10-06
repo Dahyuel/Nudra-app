@@ -669,7 +669,29 @@ export const CourseDetailPage: React.FC = () => {
               </div>}
 
               {/* Action Button */}
-              {course.deliveryMode === 'offline' ? (course.bookingUrl ? <a href={course.bookingUrl} target="_blank" rel="noreferrer" className="w-full flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-[#2D6A4F] text-white text-sm font-bold">Book this course <ArrowRight className="w-4 h-4" /></a> : <p className="rounded-xl bg-gray-50 p-3 text-center text-sm text-gray-600">Contact the organization to book this course.</p>) : isEnrolled ? (
+              {course.deliveryMode === 'offline' ? (
+                isEnrolled ? (
+                  <div className="space-y-2">
+                    <Link to="/my-courses?tab=offline" className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-xl bg-[#2D6A4F] hover:bg-[#23533e] text-white text-sm font-bold shadow-sm transition-all">
+                      <span>View my upcoming sessions</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </Link>
+                    <p className="text-center text-[11px] text-[#2D6A4F] font-bold">✓ You are enrolled this semester</p>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <button onClick={handleEnroll} disabled={enrolling} className="w-full flex items-center justify-center gap-2 py-3.5 px-4 rounded-xl bg-[#2D6A4F] hover:bg-[#23533e] text-white text-sm font-bold shadow-md hover:shadow-lg transition-all disabled:opacity-50">
+                      <span>{enrolling ? 'Enrolling…' : 'Enroll in this course (semester)'}</span>
+                      <ArrowRight className="w-4 h-4" />
+                    </button>
+                    <p className="text-center text-[11px] text-gray-500 leading-relaxed">
+                      Enrolling rosters you on every weekly session automatically.{' '}
+                      <Link to="/my-courses?tab=offline" className="font-bold text-[#2D6A4F] hover:underline">Prefer a single session?</Link>
+                    </p>
+                    {course.bookingUrl && <a href={course.bookingUrl} target="_blank" rel="noreferrer" className="block text-center text-[11px] font-bold text-[#2D6A4F] hover:underline">Or book through the organization →</a>}
+                  </div>
+                )
+              ) : isEnrolled ? (
                 <div className="space-y-2">
                   <Link
                     to={`/course/${course.id}/lesson/${course.curriculum?.[0]?.lessons?.[0]?.id || 'les-1'}`}

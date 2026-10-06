@@ -1,8 +1,10 @@
-import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import React from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { BookOpen, Play, CheckCircle2, Clock, Award, Star, ArrowUpRight } from 'lucide-react';
 import { useMyEnrollments } from '../hooks/useMyEnrollments';
 import { PageErrorBanner } from '../components/PageErrorBanner';
+import OfflineBookingsView from '../components/OfflineBookingsView';
+import { useAuth } from '../context/AuthContext';
 
 const EMPTY_MESSAGES = {
   all: "You haven't enrolled in any courses yet.",
@@ -10,8 +12,28 @@ const EMPTY_MESSAGES = {
   completed: "You haven't completed a course yet. Keep going!",
 } as const;
 
+const TABS = ['all', 'in-progress', 'completed', 'offline'] as const;
+type Tab = (typeof TABS)[number];
+
+const TAB_LABELS: Record<Tab, string> = {
+  all: 'all',
+  'in-progress': 'in progress',
+  completed: 'completed',
+  offline: 'Offline bookings',
+};
+
 export const MyCoursesPage: React.FC = () => {
-  const [filter, setFilter] = useState<'all' | 'in-progress' | 'completed'>('all');
+  const { user } = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const canBook = user?.role === 'student';
+  const visibleTabs = TABS.filter((tab) => tab !== 'offline' || canBook);
+  const tabParam = searchParams.get('tab');
+  const filter: Tab = visibleTabs.find((tab) => tab === tabParam) ?? 'all';
+  const setFilter = (tab: Tab) => {
+    const next = new URLSearchParams(searchParams);
+    next.set('tab', tab);
+    setSearchParams(next);
+  };
   const { enrollments, isLoading, error } = useMyEnrollments();
 
   const enrolledCourses = enrollments.filter((c) => {
@@ -35,7 +57,7 @@ export const MyCoursesPage: React.FC = () => {
 
         {/* Filter Pills */}
         <div className="flex items-center gap-1.5 bg-white p-1 rounded-xl border border-gray-100 shadow-2xs self-start">
-          {(['all', 'in-progress', 'completed'] as const).map((tab) => (
+          {visibleTabs.map((tab) => (
             <button
               key={tab}
               onClick={() => setFilter(tab)}
@@ -45,13 +67,15 @@ export const MyCoursesPage: React.FC = () => {
                   : 'text-gray-500 hover:text-gray-900'
               }`}
             >
-              {tab.replace('-', ' ')}
+              {TAB_LABELS[tab]}
             </button>
           ))}
         </div>
       </div>
 
-      {/* Courses List */}
+      {filter === 'offline' ? (
+        <OfflineBookingsView />
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {isLoading &&
           [0, 1].map((i) => (
@@ -173,6 +197,7 @@ export const MyCoursesPage: React.FC = () => {
           </Link>
         </div>
       </div>
+      )}
     </div>
   );
 };
