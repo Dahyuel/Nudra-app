@@ -42,6 +42,14 @@ const connection = {
   url: getRedisUrl(),
 };
 
+function getWorkerConcurrency(): number {
+  const configured = Number(process.env.TRANSCODE_CONCURRENCY ?? 1);
+  if (!Number.isSafeInteger(configured) || configured < 1 || configured > 32) {
+    throw new Error('TRANSCODE_CONCURRENCY must be an integer between 1 and 32');
+  }
+  return configured;
+}
+
 
 async function setJobStatus(
   lessonId: string,
@@ -212,9 +220,10 @@ const worker = new Worker(
 
     // Retry path: the video is already transcoded; only redo the transcript.
     if (transcriptOnly) {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'nudra-transcript-'));
       try {
         await setJobStatus(lessonId, { status: 'transcribed', errorMsg: null });
-        const rawPath = path.join(os.tmpdir(), path.basename(minioKey));
+        const rawPath = path.join(tmpDir, path.basename(minioKey));
         await downloadObject(RAW_VIDEO_BUCKET, minioKey, rawPath);
         const result = await transcribeAndEmbed(lessonId, rawPath, minioKey);
         await removeRawVideos(lessonId);
@@ -223,6 +232,10 @@ const worker = new Worker(
         const message = err instanceof Error ? err.message : String(err);
         console.error(`transcript retry failed for lesson ${lessonId}: ${message}`);
         await setJobStatus(lessonId, { status: 'transcript_failed', errorMsg: message }).catch(() => {});
+      } finally {
+        await fs.rm(tmpDir, { recursive: true, force: true }).catch((cleanupErr) => {
+          console.error('transcript retry temp cleanup error', cleanupErr);
+        });
       }
       return;
     }
@@ -258,7 +271,7 @@ const worker = new Worker(
       await setJobStatus(lessonId, { status: 'transcribed', hlsUrl: hlsPath });
 
       try {
-        const retryRawPath = path.join(os.tmpdir(), path.basename(minioKey));
+        const retryRawPath = path.join(tmpDir, `transcript-${path.basename(minioKey)}`);
         await downloadObject(RAW_VIDEO_BUCKET, minioKey, retryRawPath);
         const result = await transcribeAndEmbed(lessonId, retryRawPath, minioKey);
         // Only delete the raw upload once everything succeeded: Whisper reads the
@@ -286,11 +299,28 @@ const worker = new Worker(
       }
     }
   },
-  { connection }
+  { connection, concurrency: getWorkerConcurrency() }
 );
 
 worker.on('failed', (job, err) => {
   console.error(`video-transcoding job ${job?.id} failed`, err);
 });
+
+let closing = false;
+async function closeWorker(signal: NodeJS.Signals) {
+  if (closing) return;
+  closing = true;
+  console.log(`Received ${signal}; waiting for active video jobs to finish`);
+  try {
+    await worker.close();
+    process.exit(0);
+  } catch (err) {
+    console.error('Failed to close video worker cleanly', err);
+    process.exit(1);
+  }
+}
+
+process.once('SIGTERM', () => void closeWorker('SIGTERM'));
+process.once('SIGINT', () => void closeWorker('SIGINT'));
 
 export default worker;

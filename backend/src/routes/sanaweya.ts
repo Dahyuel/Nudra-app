@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { eq, and, sql, count, avg, inArray, desc, type SQL } from 'drizzle-orm';
+import { eq, and, sql, count, avg, inArray, desc, isNull, gt, type SQL } from 'drizzle-orm';
 import { db } from '../db';
 import {
   courses,
@@ -12,6 +12,7 @@ import {
   pastExamAttempts,
   subjectCommunities,
   communityPosts,
+  sessions,
 } from '../db/schema';
 import { requireAuth, requireRole } from '../middleware/requireAuth';
 
@@ -24,6 +25,28 @@ const GRADE_LABELS: Record<string, string> = {
 };
 
 const VALID_GRADES = ['year1', 'year2', 'year3'];
+
+router.use(async (req: Request, res: Response, next) => {
+  if (req.organization || req.user?.organizationId) {
+    return res.status(404).json({ message: 'Sanaweya learning is available in the Nudra academic space.' });
+  }
+
+  const sessionId = req.cookies?.session_id;
+  if (!sessionId) return next();
+  try {
+    const [sessionUser] = await db.select({ organizationId: users.organizationId })
+      .from(sessions)
+      .innerJoin(users, eq(sessions.userId, users.id))
+      .where(and(eq(sessions.id, sessionId), gt(sessions.expiresAt, new Date())))
+      .limit(1);
+    if (sessionUser?.organizationId) {
+      return res.status(404).json({ message: 'Sanaweya learning is available in the Nudra academic space.' });
+    }
+    return next();
+  } catch (err) {
+    return next(err);
+  }
+});
 
 async function buildCourseList(
   rows: { course: typeof courses.$inferSelect; instructorName: string; instructorAvatar: string | null }[]
@@ -175,7 +198,7 @@ router.get('/courses', async (req: Request, res: Response) => {
     const limit = Math.min(100, Math.max(1, Math.floor(Number(req.query.limit)) || 20));
     const offset = (page - 1) * limit;
 
-    const conditions: SQL[] = [eq(courses.isPublished, true), sql`${courses.sanaweyaGrade} is not null`];
+    const conditions: SQL[] = [eq(courses.isPublished, true), sql`${courses.sanaweyaGrade} is not null`, isNull(courses.organizationId)];
     if (grade) conditions.push(sql`${courses.sanaweyaGrade} = ${grade}`);
     if (subject) conditions.push(sql`${courses.sanaweyaSubject} = ${subject}`);
     if (search) conditions.push(sql`${courses.title} ilike ${'%' + search + '%'}`);

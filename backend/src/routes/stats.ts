@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { eq, and, desc, count, gte } from 'drizzle-orm';
+import { eq, and, desc, count, gte, isNull } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import {
@@ -17,6 +17,10 @@ import { BADGE_DEFINITIONS, calculateStreak } from '../lib/badges';
 import { generateCertificatePdf } from '../lib/certificatePdf';
 
 const router = Router();
+
+const courseRealm = (organizationId: string | null) => organizationId === null
+  ? isNull(courses.organizationId)
+  : eq(courses.organizationId, organizationId);
 
 const SUBJECT_COLORS = ['#2D6A4F', '#52B788', '#74C69D', '#B7E4C7', '#D8F3DC'];
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -63,7 +67,7 @@ router.get('/overview', requireAuth, requireRole('student'), async (req: Request
       .select({ category: courses.category })
       .from(enrollments)
       .innerJoin(courses, eq(enrollments.courseId, courses.id))
-      .where(eq(enrollments.studentId, studentId));
+      .where(and(eq(enrollments.studentId, studentId), courseRealm(req.organization?.id ?? null)));
 
     const categoryCounts = new Map<string, number>();
     for (const row of enrolledRows) {
@@ -96,11 +100,13 @@ router.get('/overview', requireAuth, requireRole('student'), async (req: Request
     const lessonsTodayRows = await db
       .select({ value: count() })
       .from(lessonProgress)
+      .innerJoin(courses, eq(lessonProgress.courseId, courses.id))
       .where(
         and(
           eq(lessonProgress.studentId, studentId),
           eq(lessonProgress.completed, true),
-          gte(lessonProgress.completedAt, startOfToday)
+          gte(lessonProgress.completedAt, startOfToday),
+          courseRealm(req.organization?.id ?? null),
         )
       );
     const lessonsTodayCount = Number(lessonsTodayRows[0]?.value | 0);
@@ -166,7 +172,10 @@ router.get('/certificates', requireAuth, requireRole('student'), async (req: Req
       .from(certificates)
       .innerJoin(courses, eq(certificates.courseId, courses.id))
       .leftJoin(users, eq(courses.instructorId, users.id))
-      .where(eq(certificates.studentId, studentId))
+      .where(and(
+        eq(certificates.studentId, studentId),
+        courseRealm(req.organization?.id ?? null),
+      ))
       .orderBy(desc(certificates.issuedAt));
 
     return res.json({ certificates: rows });
@@ -195,7 +204,11 @@ router.get('/certificates/:certCode/pdf', requireAuth, async (req: Request, res:
       .innerJoin(courses, eq(certificates.courseId, courses.id))
       .innerJoin(users, eq(certificates.studentId, users.id))
       .leftJoin(instructorUsers, eq(courses.instructorId, instructorUsers.id))
-      .where(and(eq(certificates.certCode, certCode), eq(certificates.studentId, userId)))
+      .where(and(
+        eq(certificates.certCode, certCode),
+        eq(certificates.studentId, userId),
+        courseRealm(req.organization?.id ?? null),
+      ))
       .limit(1);
 
     if (rows.length === 0) {

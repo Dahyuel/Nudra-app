@@ -33,6 +33,12 @@ export const LandingPage: React.FC = () => {
             <Link to="/browse" className="hover:text-[#2D6A4F] transition-colors">
               Explore Courses
             </Link>
+            <Link to="/academic" className="hover:text-[#2D6A4F] transition-colors">
+              Academic
+            </Link>
+            <Link to="/organizations" className="hover:text-[#2D6A4F] transition-colors">
+              Organizations
+            </Link>
             <Link to="/community" className="hover:text-[#2D6A4F] transition-colors">
               Community
             </Link>

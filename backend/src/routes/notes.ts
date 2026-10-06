@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, and, desc, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { lessons, courses, enrollments, lessonNotes } from '../db/schema';
 import { requireAuth } from '../middleware/requireAuth';
@@ -7,18 +7,25 @@ import { requireAuth } from '../middleware/requireAuth';
 async function verifyLessonAccess(
   lessonId: string,
   userId: string,
-  role: string
+  role: string,
+  organizationId: string | null,
 ): Promise<{ allowed: boolean; status?: number; message?: string }> {
-  const lessonRows = await db.select().from(lessons).where(eq(lessons.id, lessonId)).limit(1);
+  const courseScope = organizationId === null
+    ? isNull(courses.organizationId)
+    : eq(courses.organizationId, organizationId);
+  const lessonRows = await db.select({ lesson: lessons, course: courses })
+    .from(lessons)
+    .innerJoin(courses, eq(lessons.courseId, courses.id))
+    .where(and(eq(lessons.id, lessonId), courseScope))
+    .limit(1);
   if (lessonRows.length === 0) {
     return { allowed: false, status: 404, message: 'Lesson not found' };
   }
 
-  const lesson = lessonRows[0];
+  const { lesson, course } = lessonRows[0];
 
   if (role === 'instructor' && lesson.courseId) {
-    const courseRows = await db.select().from(courses).where(eq(courses.id, lesson.courseId)).limit(1);
-    if (courseRows.length > 0 && courseRows[0].instructorId === userId) {
+    if (course.instructorId === userId) {
       return { allowed: true };
     }
   }
@@ -48,6 +55,11 @@ router.get('/lesson/:lessonId', requireAuth, async (req: Request, res: Response)
     const studentId = req.user!.id;
     const { lessonId } = req.params;
 
+    const access = await verifyLessonAccess(lessonId, studentId, req.user!.role, req.organization?.id ?? null);
+    if (!access.allowed) {
+      return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
+    }
+
     const rows = await db
       .select()
       .from(lessonNotes)
@@ -74,7 +86,7 @@ router.post('/lesson/:lessonId', requireAuth, async (req: Request, res: Response
       return res.status(400).json({ message: 'timestampSeconds must be a non-negative number' });
     }
 
-    const access = await verifyLessonAccess(lessonId, studentId, req.user!.role);
+    const access = await verifyLessonAccess(lessonId, studentId, req.user!.role, req.organization?.id ?? null);
     if (!access.allowed) {
       return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
     }
@@ -101,15 +113,24 @@ router.delete('/:noteId', requireAuth, async (req: Request, res: Response) => {
     const studentId = req.user!.id;
     const { noteId } = req.params;
 
-    const rows = await db.select().from(lessonNotes).where(eq(lessonNotes.id, noteId)).limit(1);
+    const courseScope = req.organization
+      ? eq(courses.organizationId, req.organization.id)
+      : isNull(courses.organizationId);
+    const rows = await db.select({ note: lessonNotes })
+      .from(lessonNotes)
+      .innerJoin(lessons, eq(lessonNotes.lessonId, lessons.id))
+      .innerJoin(courses, eq(lessons.courseId, courses.id))
+      .where(and(
+        eq(lessonNotes.id, noteId),
+        eq(lessonNotes.studentId, studentId),
+        courseScope,
+      ))
+      .limit(1);
     if (rows.length === 0) {
       return res.status(404).json({ message: 'Note not found' });
     }
-    if (rows[0].studentId !== studentId) {
-      return res.status(403).json({ message: 'Forbidden' });
-    }
 
-    await db.delete(lessonNotes).where(eq(lessonNotes.id, noteId));
+    await db.delete(lessonNotes).where(and(eq(lessonNotes.id, noteId), eq(lessonNotes.studentId, studentId)));
 
     return res.json({ success: true });
   } catch (err) {

@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { randomBytes } from 'crypto';
-import { eq, and, count, sql } from 'drizzle-orm';
+import { eq, and, count, sql, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { lessons, enrollments, lessonProgress, studySessions, certificates, courses } from '../db/schema';
 import { requireAuth, requireRole } from '../middleware/requireAuth';
@@ -28,15 +28,23 @@ async function recordStudySession(studentId: string): Promise<void> {
 
 async function verifyStudentLessonAccess(
   lessonId: string,
-  studentId: string
+  studentId: string,
+  organizationId: string | null,
 ): Promise<{ allowed: boolean; status?: number; message?: string; courseId?: string }> {
-  const lessonRows = await db.select().from(lessons).where(eq(lessons.id, lessonId)).limit(1);
+  const courseScope = organizationId === null
+    ? isNull(courses.organizationId)
+    : eq(courses.organizationId, organizationId);
+  const lessonRows = await db.select({ lesson: lessons, course: courses })
+    .from(lessons)
+    .innerJoin(courses, eq(lessons.courseId, courses.id))
+    .where(and(eq(lessons.id, lessonId), courseScope))
+    .limit(1);
   if (lessonRows.length === 0) {
     return { allowed: false, status: 404, message: 'Lesson not found' };
   }
 
-  const lesson = lessonRows[0];
-  const courseId = lesson.courseId;
+  const { lesson, course } = lessonRows[0];
+  const courseId = course.id;
 
   if (lesson.isFree) {
     return { allowed: true, courseId };
@@ -97,7 +105,7 @@ router.post('/lesson/:lessonId', requireAuth, requireRole('student'), async (req
       return res.status(400).json({ message: 'watchedSeconds must be a non-negative number' });
     }
 
-    const access = await verifyStudentLessonAccess(lessonId, studentId);
+    const access = await verifyStudentLessonAccess(lessonId, studentId, req.organization?.id ?? null);
     if (!access.allowed) {
       return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
     }
@@ -198,6 +206,13 @@ router.get('/course/:courseId', requireAuth, requireRole('student'), async (req:
   try {
     const studentId = req.user!.id;
     const { courseId } = req.params;
+
+    const courseScope = req.organization
+      ? eq(courses.organizationId, req.organization.id)
+      : isNull(courses.organizationId);
+    const scopedCourse = await db.select({ id: courses.id }).from(courses)
+      .where(and(eq(courses.id, courseId), courseScope)).limit(1);
+    if (scopedCourse.length === 0) return res.status(404).json({ message: 'Course not found' });
 
     const rows = await db
       .select()

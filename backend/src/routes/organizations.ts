@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { randomBytes, createHash } from 'crypto';
-import { and, eq, desc, sql } from 'drizzle-orm';
+import { and, eq, desc, isNull, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { courses, courseSections, organizations, organizationLandingPages, orgMemberships, users, passwordResetTokens } from '../db/schema';
@@ -15,24 +15,44 @@ const slugSchema = z.string().trim().toLowerCase().regex(/^[a-z0-9](?:[a-z0-9-]{
 const RESERVED_ORG_SLUGS = new Set(['admin', 'api', 'app', 'assets', 'auth', 'cdn', 'mail', 'static', 'support', 'www']);
 
 async function managerAccess(orgId: string, userId: string) {
-  const [org] = await db.select({ ownerId: organizations.ownerId }).from(organizations)
-    .where(eq(organizations.id, orgId)).limit(1);
-  if (!org) return false;
-  if (org.ownerId === userId) return true;
   const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships)
+    .innerJoin(users, eq(orgMemberships.userId, users.id))
     .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId),
-      eq(orgMemberships.role, 'organization_manager'), eq(orgMemberships.status, 'active'))).limit(1);
+      eq(orgMemberships.role, 'organization_manager'), eq(orgMemberships.status, 'active'),
+      isNull(users.organizationId), or(eq(users.role, 'organization_manager'), eq(users.role, 'admin')))).limit(1);
   return Boolean(membership);
 }
 
+async function globalAdmin(userId: string) {
+  const [admin] = await db.select({ id: users.id }).from(users).where(and(
+    eq(users.id, userId), eq(users.role, 'admin'), isNull(users.organizationId),
+  )).limit(1);
+  return Boolean(admin);
+}
+
+async function organizationAccount(userId: string, orgId: string, role?: 'student' | 'instructor') {
+  const [account] = await db.select({ id: users.id }).from(users).where(and(
+    eq(users.id, userId), eq(users.organizationId, orgId), ...(role ? [eq(users.role, role)] : []),
+  )).limit(1);
+  return Boolean(account);
+}
+
+async function canManageOrganization(orgId: string, userId: string, role: string) {
+  return role === 'admin' ? globalAdmin(userId) : managerAccess(orgId, userId);
+}
+
 router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Response) => {
+  if (!(await globalAdmin(req.user!.id))) return res.status(403).json({ message: 'A global administrator account is required.' });
   const parsed = z.object({ name: z.string().trim().min(2).max(255), slug: slugSchema,
     managerEmail: z.string().trim().email().optional() }).safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ message: 'Enter an organization name, valid slug, and optional manager email.' });
   if (RESERVED_ORG_SLUGS.has(parsed.data.slug)) return res.status(400).json({ message: 'That subdomain is reserved. Choose another organization slug.' });
   try {
     const manager = parsed.data.managerEmail
-      ? (await db.select({ id: users.id }).from(users).where(eq(users.email, parsed.data.managerEmail.toLowerCase())).limit(1))[0]
+      ? (await db.select({ id: users.id }).from(users).where(and(
+        eq(users.email, parsed.data.managerEmail.toLowerCase()), isNull(users.organizationId),
+        or(eq(users.role, 'organization_manager'), eq(users.role, 'admin')),
+      )).limit(1))[0]
       : undefined;
     if (parsed.data.managerEmail && !manager) return res.status(404).json({ message: 'Manager account not found.' });
     const [org] = await db.insert(organizations).values({
@@ -54,6 +74,32 @@ router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Re
     }
     console.error('create organization error', err);
     return res.status(500).json({ message: 'Could not create organization.' });
+  }
+});
+
+// The public directory is available only from the global Nudra host. Return
+// organization profile fields that are intentionally safe to display publicly;
+// never include owner, member, course, or domain-verification details.
+router.get('/directory', async (req: Request, res: Response, next) => {
+  if (req.organization) return res.status(404).json({ message: 'Organization directory is available on Nudra.' });
+  try {
+    const rows = await db.select({
+      id: organizations.id,
+      name: organizations.name,
+      slug: organizations.slug,
+      logoUrl: organizations.logoUrl,
+      primaryColor: organizations.primaryColor,
+      customDomain: organizations.customDomain,
+      customDomainStatus: organizations.customDomainStatus,
+      customDomainVerifiedAt: organizations.customDomainVerifiedAt,
+    }).from(organizations).where(eq(organizations.isActive, true)).orderBy(organizations.name);
+    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+    return res.json({ organizations: rows.map(({ customDomain, customDomainStatus, customDomainVerifiedAt, ...organization }) => ({
+      ...organization,
+      customDomain: customDomainStatus === 'active' && customDomainVerifiedAt ? customDomain : null,
+    })) });
+  } catch (error) {
+    return next(error);
   }
 });
 
@@ -82,16 +128,21 @@ router.get('/public-current', async (req: Request, res: Response, next) => {
 
 async function landingManagerAccess(req: Request) {
   return Boolean(req.organization?.id === req.params.orgId &&
-    (req.user?.role === 'admin' || await managerAccess(req.params.orgId, req.user!.id)));
+    (req.user && await canManageOrganization(req.params.orgId, req.user.id, req.user.role)));
 }
 
 router.get('/:orgId/landing-page', requireAuth, async (req: Request, res: Response, next) => {
   try {
     if (!(await landingManagerAccess(req))) return res.status(403).json({ message: 'Organization manager access required.' });
     const [page] = await db.select().from(organizationLandingPages).where(eq(organizationLandingPages.orgId, req.params.orgId)).limit(1);
+    const historyResult = await db.execute(sql`SELECT revision, actor_id AS "actorId", created_at AS "createdAt",
+        (published IS NOT NULL) AS published
+      FROM organization_landing_page_versions WHERE org_id=${req.params.orgId}
+      ORDER BY revision DESC LIMIT 30`);
     res.set('Cache-Control', 'no-store');
     return res.json({ draft: page?.draft ?? defaultLandingPage(req.organization!), defaultData: defaultLandingPage(req.organization!), revision: page?.revision ?? 0,
       publishedAt: page?.publishedAt ?? null, updatedAt: page?.updatedAt ?? null,
+      history: historyResult.rows,
       courses: await publicOrganizationCourses(req.params.orgId) });
   } catch (err) { return next(err); }
 });
@@ -105,30 +156,78 @@ router.put('/:orgId/landing-page', requireAuth, async (req: Request, res: Respon
     const { data, expectedRevision, publish } = parsed.data;
     const now = new Date();
     const saved = await db.transaction(async (tx) => {
+      let result;
       if (expectedRevision === 0) {
         const [created] = await tx.insert(organizationLandingPages).values({ orgId: req.params.orgId, draft: data,
           published: publish ? data : null, publishedAt: publish ? now : null, revision: 1, updatedAt: now })
           .onConflictDoNothing().returning();
-        return created;
+        result = created;
+      } else {
+        const [updated] = await tx.update(organizationLandingPages).set({ draft: data,
+          ...(publish ? { published: data, publishedAt: now } : {}), updatedAt: now,
+          revision: sql`${organizationLandingPages.revision} + 1` })
+          .where(and(eq(organizationLandingPages.orgId, req.params.orgId), eq(organizationLandingPages.revision, expectedRevision))).returning();
+        result = updated;
       }
-      const [updated] = await tx.update(organizationLandingPages).set({ draft: data,
-        ...(publish ? { published: data, publishedAt: now } : {}), updatedAt: now,
-        revision: sql`${organizationLandingPages.revision} + 1` })
-        .where(and(eq(organizationLandingPages.orgId, req.params.orgId), eq(organizationLandingPages.revision, expectedRevision))).returning();
-      return updated;
+      if (result) await tx.execute(sql`INSERT INTO organization_landing_page_versions
+        (org_id, revision, draft, published, actor_id)
+        VALUES (${req.params.orgId}, ${result.revision}, ${JSON.stringify(result.draft)}::jsonb,
+          ${result.published ? JSON.stringify(result.published) : null}::jsonb, ${req.user!.id})`);
+      return result;
     });
     if (!saved) return res.status(409).json({ message: 'Someone else updated this page. Reload the editor before saving again.' });
     return res.json({ revision: saved.revision, updatedAt: saved.updatedAt, publishedAt: saved.publishedAt });
   } catch (err) { return next(err); }
 });
 
+router.post('/:orgId/landing-page/restore', requireAuth, async (req: Request, res: Response, next) => {
+  try {
+    if (!(await landingManagerAccess(req))) return res.status(403).json({ message: 'Organization manager access required.' });
+    const parsed = z.object({ sourceRevision: z.number().int().positive(), expectedRevision: z.number().int().min(0), publish: z.boolean() }).strict().safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ message: 'Choose a saved version and confirm the current revision.' });
+    const restored = await db.transaction(async (tx) => {
+      const [source] = await tx.execute(sql`SELECT draft FROM organization_landing_page_versions
+        WHERE org_id=${req.params.orgId} AND revision=${parsed.data.sourceRevision} LIMIT 1`)
+        .then((result) => result.rows as Array<{ draft: unknown }>);
+      if (!source || !landingPageSchema.safeParse(source.draft).success) return null;
+      const draft = landingPageSchema.parse(source.draft);
+      const now = new Date();
+      let saved;
+      if (parsed.data.expectedRevision === 0) {
+        const [created] = await tx.insert(organizationLandingPages).values({ orgId: req.params.orgId,
+          draft, published: parsed.data.publish ? draft : null, publishedAt: parsed.data.publish ? now : null,
+          revision: 1, updatedAt: now }).onConflictDoNothing().returning();
+        saved = created;
+      } else {
+        const [updated] = await tx.update(organizationLandingPages).set({ draft,
+          ...(parsed.data.publish ? { published: draft, publishedAt: now } : {}),
+          updatedAt: now, revision: sql`${organizationLandingPages.revision} + 1` })
+          .where(and(eq(organizationLandingPages.orgId, req.params.orgId), eq(organizationLandingPages.revision, parsed.data.expectedRevision))).returning();
+        saved = updated;
+      }
+      if (!saved) return null;
+      await tx.execute(sql`INSERT INTO organization_landing_page_versions
+        (org_id, revision, draft, published, actor_id)
+        VALUES (${req.params.orgId}, ${saved.revision}, ${JSON.stringify(saved.draft)}::jsonb,
+          ${saved.published ? JSON.stringify(saved.published) : null}::jsonb, ${req.user!.id})`);
+      return saved;
+    });
+    if (!restored) return res.status(409).json({ message: 'The selected version is unavailable or the page changed. Reload before restoring.' });
+    return res.json({ revision: restored.revision, updatedAt: restored.updatedAt, publishedAt: restored.publishedAt });
+  } catch (err) { return next(err); }
+});
+
 router.get('/current', requireAuth, async (req: Request, res: Response) => {
   const org = req.organization;
   if (!org) return res.status(404).json({ message: 'Open an organization domain to continue.' });
-  const [membership] = await db.select().from(orgMemberships).where(and(
-    eq(orgMemberships.orgId, org.id), eq(orgMemberships.userId, req.user!.id)
+  const [membership] = await db.select({ membership: orgMemberships }).from(orgMemberships)
+    .innerJoin(users, eq(orgMemberships.userId, users.id)).where(and(
+    eq(orgMemberships.orgId, org.id), eq(orgMemberships.userId, req.user!.id),
+    or(eq(users.organizationId, org.id), and(isNull(users.organizationId),
+      eq(orgMemberships.role, 'organization_manager'),
+      or(eq(users.role, 'organization_manager'), eq(users.role, 'admin')))),
   )).limit(1);
-  const courseRows = membership?.status === 'active'
+  const courseRows = membership?.membership.status === 'active'
     ? await db.select({ id: courses.id, title: courses.title, description: courses.description,
         thumbnailUrl: courses.thumbnailUrl, category: courses.category, level: courses.level,
         deliveryMode: courses.deliveryMode, location: courses.location, scheduleText: courses.scheduleText,
@@ -136,13 +235,20 @@ router.get('/current', requireAuth, async (req: Request, res: Response) => {
       .from(courses).where(and(eq(courses.organizationId, org.id), eq(courses.isPublished, true), eq(courses.approvalStatus, 'approved')))
       .orderBy(desc(courses.createdAt))
     : [];
-  return res.json({ organization: org, membership: membership ?? null, courses: courseRows });
+  return res.json({ organization: {
+    id: org.id, name: org.name, slug: org.slug, logoUrl: org.logoUrl,
+    primaryColor: org.primaryColor, customDomain: org.customDomain,
+    customDomainStatus: org.customDomainStatus,
+  }, membership: membership?.membership ?? null, courses: courseRows });
 });
 
 router.post('/join', requireAuth, async (req: Request, res: Response) => {
   const org = req.organization;
   if (!org) return res.status(404).json({ message: 'Open an organization domain to request access.' });
   if (req.user!.role !== 'student') return res.status(403).json({ message: 'Only student accounts can request to join.' });
+  if (!(await organizationAccount(req.user!.id, org.id, 'student'))) {
+    return res.status(403).json({ message: 'Register or sign in through this organization to request access.' });
+  }
   try {
     const [membership] = await db.insert(orgMemberships).values({
       orgId: org.id, userId: req.user!.id, role: 'student', status: 'pending',
@@ -162,7 +268,8 @@ router.get('/:orgId/requests', requireAuth, async (req: Request, res: Response) 
   if (!(await managerAccess(req.params.orgId, req.user!.id))) return res.status(403).json({ message: 'Organization manager access required.' });
   const rows = await db.select({ membership: orgMemberships, name: users.name, email: users.email })
     .from(orgMemberships).innerJoin(users, eq(orgMemberships.userId, users.id))
-    .where(and(eq(orgMemberships.orgId, req.params.orgId), eq(orgMemberships.status, 'pending')))
+    .where(and(eq(orgMemberships.orgId, req.params.orgId), eq(orgMemberships.status, 'pending'),
+      eq(orgMemberships.role, 'student'), eq(users.organizationId, req.params.orgId)))
     .orderBy(desc(orgMemberships.createdAt));
   return res.json({ requests: rows });
 });
@@ -171,7 +278,11 @@ router.get('/:orgId/members', requireAuth, async (req: Request, res: Response) =
   if (!(await managerAccess(req.params.orgId, req.user!.id))) return res.status(403).json({ message: 'Organization manager access required.' });
   const rows = await db.select({ membership: orgMemberships, name: users.name, email: users.email, userId: users.id })
     .from(orgMemberships).innerJoin(users, eq(orgMemberships.userId, users.id))
-    .where(eq(orgMemberships.orgId, req.params.orgId)).orderBy(desc(orgMemberships.createdAt));
+    .where(and(eq(orgMemberships.orgId, req.params.orgId), or(
+      eq(users.organizationId, req.params.orgId),
+      and(isNull(users.organizationId), eq(orgMemberships.role, 'organization_manager'),
+        or(eq(users.role, 'organization_manager'), eq(users.role, 'admin'))),
+    ))).orderBy(desc(orgMemberships.createdAt));
   return res.json({ members: rows });
 });
 
@@ -179,7 +290,8 @@ router.get('/:orgId/courses', requireAuth, async (req: Request, res: Response) =
   if (!(await managerAccess(req.params.orgId, req.user!.id))) return res.status(403).json({ message: 'Organization manager access required.' });
   const rows = await db.select({ course: courses, instructorName: users.name, instructorEmail: users.email, instructorId: users.id })
     .from(courses).innerJoin(users, eq(courses.instructorId, users.id))
-    .where(eq(courses.organizationId, req.params.orgId)).orderBy(desc(courses.updatedAt));
+    .where(and(eq(courses.organizationId, req.params.orgId), eq(users.organizationId, req.params.orgId)))
+    .orderBy(desc(courses.updatedAt));
   return res.json({ courses: rows.map((row) => ({ ...row.course, instructorId: row.instructorId, instructorName: row.instructorName, instructorEmail: row.instructorEmail })) });
 });
 
@@ -196,9 +308,11 @@ router.post('/:orgId/courses', requireAuth, async (req: Request, res: Response) 
   if (parsed.data.deliveryMode === 'offline' && (!parsed.data.location || !parsed.data.scheduleText || !parsed.data.bookingUrl)) {
     return res.status(400).json({ message: 'Offline courses need a location, schedule, and booking page URL.' });
   }
-  const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships).where(and(
+  const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships)
+    .innerJoin(users, eq(orgMemberships.userId, users.id)).where(and(
     eq(orgMemberships.orgId, req.params.orgId), eq(orgMemberships.userId, parsed.data.instructorId),
-    eq(orgMemberships.role, 'instructor'), eq(orgMemberships.status, 'active'))).limit(1);
+    eq(orgMemberships.role, 'instructor'), eq(orgMemberships.status, 'active'),
+    eq(users.organizationId, req.params.orgId), eq(users.role, 'instructor'))).limit(1);
   if (!membership) return res.status(400).json({ message: 'The selected instructor is not an active member of this organization.' });
   const [course] = await db.insert(courses).values({
     instructorId: parsed.data.instructorId, organizationId: req.params.orgId, title: parsed.data.title,
@@ -240,7 +354,7 @@ router.post('/:orgId/courses/:courseId/visibility', requireAuth, async (req: Req
 });
 
 router.post('/:orgId/domain', requireAuth, async (req: Request, res: Response) => {
-  if (!(await managerAccess(req.params.orgId, req.user!.id)) && req.user!.role !== 'admin') {
+  if (!(await canManageOrganization(req.params.orgId, req.user!.id, req.user!.role))) {
     return res.status(403).json({ message: 'Organization manager access required.' });
   }
   const parsed = z.object({ domain: z.string().trim().max(255).nullable() }).strict().safeParse(req.body ?? {});
@@ -286,7 +400,7 @@ router.post('/:orgId/domain', requireAuth, async (req: Request, res: Response) =
 });
 
 router.post('/:orgId/domain/verify', requireAuth, async (req: Request, res: Response) => {
-  if (!(await managerAccess(req.params.orgId, req.user!.id)) && req.user!.role !== 'admin') {
+  if (!(await canManageOrganization(req.params.orgId, req.user!.id, req.user!.role))) {
     return res.status(403).json({ message: 'Organization manager access required.' });
   }
   const [org] = await db.select().from(organizations).where(eq(organizations.id, req.params.orgId)).limit(1);
@@ -329,66 +443,95 @@ router.post('/:orgId/instructors/invite', requireAuth, async (req: Request, res:
   const parsed = z.object({ email: z.string().trim().email(), name: z.string().trim().min(2).max(255).optional().or(z.literal('')) }).safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ message: 'Enter a valid instructor name and email.' });
   const email = parsed.data.email.toLowerCase();
-  let [instructor] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  let [instructor] = await db.select({ id: users.id, name: users.name, email: users.email,
+    role: users.role, instructorStatus: users.instructorStatus }).from(users).where(and(
+    eq(users.email, email), eq(users.organizationId, req.params.orgId),
+  )).limit(1);
   let setupToken: string | undefined;
   let createdAccount = false;
-  let createdPasswordHash: string | undefined;
   if (!instructor) {
-    if (!parsed.data.name?.trim()) return res.status(400).json({ message: 'Enter the instructor name to create a new account.' });
+    const instructorName = parsed.data.name?.trim();
+    if (!instructorName) return res.status(400).json({ message: 'Enter the instructor name to create a new account.' });
     const randomPassword = randomBytes(32).toString('base64url');
     const passwordHash = await bcrypt.hash(randomPassword, 12);
-    createdPasswordHash = passwordHash;
-    [instructor] = await db.insert(users).values({ name: parsed.data.name.trim(), email, passwordHash, role: 'instructor', instructorStatus: 'approved', mustChangePassword: true }).returning();
-    createdAccount = true;
     setupToken = randomBytes(32).toString('base64url');
-    await db.insert(passwordResetTokens).values({ userId: instructor.id, tokenHash: createHash('sha256').update(setupToken).digest('hex'), expiresAt: new Date(Date.now() + 30 * 60 * 1000) });
+    try {
+      instructor = await db.transaction(async (tx) => {
+        const [created] = await tx.insert(users).values({ name: instructorName, email,
+          organizationId: req.params.orgId, passwordHash, role: 'instructor',
+          instructorStatus: 'approved', mustChangePassword: true }).returning({
+          id: users.id, name: users.name, email: users.email, role: users.role,
+          instructorStatus: users.instructorStatus,
+        });
+        await tx.insert(passwordResetTokens).values({ userId: created.id,
+          tokenHash: createHash('sha256').update(setupToken!).digest('hex'),
+          expiresAt: new Date(Date.now() + 30 * 60 * 1000) });
+        return created;
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '';
+      if (message.includes('duplicate key')) return res.status(409).json({ message: 'An account for this email already exists in this organization. Reload and try again.' });
+      throw err;
+    }
+    createdAccount = true;
   }
   if (instructor.role !== 'instructor' || (instructor.instructorStatus !== null && instructor.instructorStatus !== 'approved')) {
     if (createdAccount) {
       await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, instructor.id));
-      await db.delete(users).where(eq(users.id, instructor.id));
+      await db.delete(users).where(and(eq(users.id, instructor.id), eq(users.organizationId, req.params.orgId)));
     }
     return res.status(409).json({ message: 'This email already belongs to an account that is not an approved instructor.' });
   }
   const [membership] = await db.insert(orgMemberships).values({
     orgId: req.params.orgId, userId: instructor.id, role: 'instructor', status: 'invited',
   }).onConflictDoNothing().returning();
-  if (!membership) return res.status(409).json({ message: 'This person already belongs to the organization or has a pending invitation.' });
+  if (!membership) {
+    if (createdAccount) {
+      await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, instructor.id));
+      await db.delete(users).where(and(eq(users.id, instructor.id), eq(users.organizationId, req.params.orgId)));
+    }
+    return res.status(409).json({ message: 'This person already belongs to the organization or has a pending invitation.' });
+  }
   if (createdAccount && !process.env.RESEND_API_KEY) {
     await db.delete(orgMemberships).where(eq(orgMemberships.id, membership.id));
     await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, instructor.id));
-    await db.delete(users).where(eq(users.id, instructor.id));
+    await db.delete(users).where(and(eq(users.id, instructor.id), eq(users.organizationId, req.params.orgId)));
     return res.status(503).json({ message: 'Instructor invitation email is unavailable. Configure Resend and try again.' });
   }
   const [org] = await db.select({ name: organizations.name, slug: organizations.slug }).from(organizations)
     .where(eq(organizations.id, req.params.orgId)).limit(1);
-  if (org) sendOrganizationInstructorInviteEmail({
-    name: instructor.name,
-    email: instructor.email,
-    organizationName: org.name,
-    organizationSlug: org.slug,
-    membershipId: membership.id,
-    setupToken,
-  }).catch(async (err) => {
-    console.warn('organization instructor invitation email failed', err);
-    if (setupToken) {
-      await db.delete(orgMemberships).where(eq(orgMemberships.id, membership.id));
+  if (!org) {
+    await db.delete(orgMemberships).where(and(eq(orgMemberships.id, membership.id), eq(orgMemberships.orgId, req.params.orgId)));
+    if (createdAccount) {
       await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, instructor.id));
-      await db.update(users).set({ passwordHash: createdPasswordHash, mustChangePassword: true }).where(eq(users.id, instructor.id));
+      await db.delete(users).where(and(eq(users.id, instructor.id), eq(users.organizationId, req.params.orgId)));
     }
-  });
-  if (createdAccount) await db.update(orgMemberships).set({ status: 'active' }).where(eq(orgMemberships.id, membership.id));
-  if (!org && createdAccount) {
-    await db.delete(orgMemberships).where(eq(orgMemberships.id, membership.id));
-    await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, instructor.id));
-    await db.update(users).set({ passwordHash: createdPasswordHash, mustChangePassword: true }).where(eq(users.id, instructor.id));
     return res.status(404).json({ message: 'Organization not found.' });
+  }
+  try {
+    await sendOrganizationInstructorInviteEmail({
+      name: instructor.name,
+      email: instructor.email,
+      organizationName: org!.name,
+      organizationSlug: org!.slug,
+      membershipId: membership.id,
+      setupToken,
+    });
+    if (createdAccount) await db.update(orgMemberships).set({ status: 'active' }).where(and(
+      eq(orgMemberships.id, membership.id), eq(orgMemberships.orgId, req.params.orgId),
+    ));
+  } catch (err) {
+    console.warn('organization instructor invitation email failed', err);
+    await db.delete(orgMemberships).where(and(eq(orgMemberships.id, membership.id), eq(orgMemberships.orgId, req.params.orgId)));
+    if (setupToken) await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, instructor.id));
+    if (createdAccount) await db.delete(users).where(and(eq(users.id, instructor.id), eq(users.organizationId, req.params.orgId)));
+    return res.status(503).json({ message: 'Could not send the instructor invitation. No organization access was granted; try again.' });
   }
   return res.status(201).json({ membership });
 });
 
 router.put('/:orgId/branding', requireAuth, async (req: Request, res: Response) => {
-  if (!(await managerAccess(req.params.orgId, req.user!.id)) && req.user!.role !== 'admin') {
+  if (!(await canManageOrganization(req.params.orgId, req.user!.id, req.user!.role))) {
     return res.status(403).json({ message: 'Organization manager access required.' });
   }
   const parsed = z.object({
@@ -414,6 +557,12 @@ router.post('/:orgId/members/:membershipId/decision', requireAuth, async (req: R
   if (!(await managerAccess(req.params.orgId, req.user!.id))) return res.status(403).json({ message: 'Organization manager access required.' });
   const parsed = z.object({ decision: z.enum(['approve', 'reject']) }).safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ message: 'Choose approve or reject.' });
+  const [target] = await db.select({ id: orgMemberships.id }).from(orgMemberships)
+    .innerJoin(users, eq(orgMemberships.userId, users.id)).where(and(
+      eq(orgMemberships.id, req.params.membershipId), eq(orgMemberships.orgId, req.params.orgId),
+      eq(orgMemberships.role, 'student'), eq(users.organizationId, req.params.orgId),
+    )).limit(1);
+  if (!target) return res.status(404).json({ message: 'Pending request not found.' });
   const [updated] = await db.update(orgMemberships).set({
     status: parsed.data.decision === 'approve' ? 'active' : 'rejected',
   }).where(and(eq(orgMemberships.id, req.params.membershipId), eq(orgMemberships.orgId, req.params.orgId),
@@ -423,9 +572,13 @@ router.post('/:orgId/members/:membershipId/decision', requireAuth, async (req: R
 });
 
 router.post('/:orgId/invitations/:membershipId/accept', requireAuth, async (req: Request, res: Response) => {
+  if (!(await organizationAccount(req.user!.id, req.params.orgId, 'instructor'))) {
+    return res.status(403).json({ message: 'Sign in with the instructor account created for this organization.' });
+  }
   const [updated] = await db.update(orgMemberships).set({ status: 'active' }).where(and(
     eq(orgMemberships.id, req.params.membershipId), eq(orgMemberships.orgId, req.params.orgId),
-    eq(orgMemberships.userId, req.user!.id), eq(orgMemberships.status, 'invited'),
+    eq(orgMemberships.userId, req.user!.id), eq(orgMemberships.role, 'instructor'),
+    eq(orgMemberships.status, 'invited'),
   )).returning();
   if (!updated) return res.status(404).json({ message: 'Organization invitation not found.' });
   return res.json({ membership: updated });

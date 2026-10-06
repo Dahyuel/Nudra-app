@@ -24,7 +24,7 @@ export const ProtectedRoute: React.FC<ProtectedRouteProps> = ({ requiredRole }) 
 
   if (user.organizationContext && user.role === 'student' &&
       !location.pathname.startsWith('/organization') && !location.pathname.startsWith('/course/') &&
-      location.pathname !== '/settings') {
+      location.pathname !== '/settings' && location.pathname !== '/bookings') {
     return <Navigate to={homePathFor(user)} replace />;
   }
 

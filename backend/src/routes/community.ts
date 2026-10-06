@@ -11,26 +11,40 @@ import {
   sessions,
   enrollments,
   subjectCommunities,
+  orgMemberships,
 } from '../db/schema';
-import { requireAuth, requireRole, isApprovedInstructor } from '../middleware/requireAuth';
+import { isUserAllowedInOrganization, requireAuth, requireRole, isApprovedInstructor } from '../middleware/requireAuth';
 import { generateAnonToken } from '../lib/anonToken';
 import { checkAndAwardBadges } from '../lib/badges';
 import { sendCommunityReplyEmail } from '../lib/mailer';
 import { createNotification } from '../lib/notifications';
 
 async function verifyCourseCommunityAccess(
+  req: Request,
   userId: string,
   role: string,
   courseId: string | null
 ): Promise<{ allowed: boolean; status?: number; message?: string }> {
   if (!courseId) return { allowed: true };
 
-  const courseRows = await db.select().from(courses).where(eq(courses.id, courseId)).limit(1);
-  if (courseRows.length === 0) {
+  const [course] = await db.select({ organizationId: courses.organizationId, instructorId: courses.instructorId })
+    .from(courses).where(eq(courses.id, courseId)).limit(1);
+  if (!course || (req.organization ? course.organizationId !== req.organization.id : course.organizationId !== null)) {
     return { allowed: false, status: 404, message: 'Course not found' };
   }
 
-  if (role === 'instructor' && courseRows[0].instructorId === userId) {
+  if (req.organization && role === 'admin') return { allowed: true };
+
+  if (req.organization) {
+    const [membership] = await db.select({ role: orgMemberships.role }).from(orgMemberships).where(and(
+      eq(orgMemberships.orgId, req.organization.id), eq(orgMemberships.userId, userId),
+      eq(orgMemberships.status, 'active'),
+    )).limit(1);
+    if (!membership) return { allowed: false, status: 403, message: 'Active organization membership is required.' };
+    if (membership.role === 'organization_manager') return { allowed: true };
+  }
+
+  if (role === 'instructor' && course.instructorId === userId) {
     return { allowed: true };
   }
 
@@ -45,6 +59,19 @@ async function verifyCourseCommunityAccess(
   }
 
   return { allowed: false, status: 403, message: 'You must be enrolled to participate in this course community' };
+}
+
+async function postBelongsToRequestScope(
+  req: Request,
+  post: { courseId: string | null; subjectCommunityId: string | null },
+): Promise<boolean> {
+  if (post.courseId) {
+    const [course] = await db.select({ organizationId: courses.organizationId }).from(courses)
+      .where(eq(courses.id, post.courseId)).limit(1);
+    return Boolean(course && (req.organization ? course.organizationId === req.organization.id : course.organizationId === null));
+  }
+  // Community-wide and subject feeds have no organization ownership field yet.
+  return req.organization === undefined;
 }
 
 const MAX_CONTENT_LENGTH = 10000;
@@ -69,6 +96,15 @@ async function getCurrentUserId(req: Request): Promise<string | null> {
   return rows[0]?.userId ?? null;
 }
 
+async function getCurrentRealmUser(req: Request) {
+  const sessionId = req.cookies?.session_id;
+  if (!sessionId) return null;
+  const [user] = await db.select({ id: users.id, role: users.role, organizationId: users.organizationId })
+    .from(sessions).innerJoin(users, eq(sessions.userId, users.id))
+    .where(and(eq(sessions.id, sessionId), sql`${sessions.expiresAt} > now()`)).limit(1);
+  return user ?? null;
+}
+
 function roomNameForPost(post: { courseId: string | null; subjectCommunityId?: string | null }) {
   if (post.courseId) return `course:${post.courseId}`;
   if (post.subjectCommunityId) return `subject:${post.subjectCommunityId}`;
@@ -89,9 +125,32 @@ export function createCommunityRouter(io: Server) {
       const search = (req.query.search as string) || '';
       const tag = (req.query.tag as string) || '';
       const currentUserId = await getCurrentUserId(req);
+      const currentUser = currentUserId ? await getCurrentRealmUser(req) : null;
+
+      if (currentUser && !(await isUserAllowedInOrganization(currentUser, req.organization))) {
+        return res.status(403).json({ message: 'This account cannot access this realm.' });
+      }
+      if (req.organization && !courseId) {
+        return res.status(404).json({ message: 'Organization community requires a course context.' });
+      }
+      if (courseId && !isUuid(courseId)) return res.status(400).json({ message: 'Invalid course id' });
+      if (subjectCommunityId && req.organization) {
+        return res.status(404).json({ message: 'Organization subject communities are not available.' });
+      }
 
       if (subjectCommunityId && !isUuid(subjectCommunityId)) {
         return res.status(400).json({ message: 'Invalid subject community' });
+      }
+
+      if (courseId) {
+        const [course] = await db.select({ organizationId: courses.organizationId }).from(courses)
+          .where(eq(courses.id, courseId)).limit(1);
+        if (!course || (req.organization ? course.organizationId !== req.organization.id : course.organizationId !== null)) {
+          return res.status(404).json({ message: 'Course not found' });
+        }
+        if (!currentUser) return res.status(401).json({ message: 'Sign in to access this course community.' });
+        const access = await verifyCourseCommunityAccess(req, currentUser.id, currentUser.role, courseId);
+        if (!access.allowed) return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
       }
 
       // Three separate feeds: a course's community, a Sanaweya subject community,
@@ -212,6 +271,19 @@ export function createCommunityRouter(io: Server) {
     try {
       const { postId } = req.params;
       const currentUserId = await getCurrentUserId(req);
+      const currentUser = currentUserId ? await getCurrentRealmUser(req) : null;
+      const [post] = await db.select().from(communityPosts).where(eq(communityPosts.id, postId)).limit(1);
+      if (!post || !(await postBelongsToRequestScope(req, post))) {
+        return res.status(404).json({ message: 'Post not found' });
+      }
+      if (currentUser && !(await isUserAllowedInOrganization(currentUser, req.organization))) {
+        return res.status(403).json({ message: 'This account cannot access this realm.' });
+      }
+      if (post.courseId) {
+        if (!currentUser) return res.status(401).json({ message: 'Sign in to access this course community.' });
+        const access = await verifyCourseCommunityAccess(req, currentUser.id, currentUser.role, post.courseId);
+        if (!access.allowed) return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
+      }
 
       const replyRows = await db
         .select({
@@ -303,6 +375,7 @@ export function createCommunityRouter(io: Server) {
       }
 
       if (subjectCommunityId !== undefined && subjectCommunityId !== null) {
+        if (req.organization) return res.status(404).json({ message: 'Organization subject communities are not available.' });
         if (courseId) {
           return res.status(400).json({ message: 'A post belongs to a course or a subject community, not both' });
         }
@@ -322,7 +395,10 @@ export function createCommunityRouter(io: Server) {
       // Anonymous identities are per feed, so posts can't be linked across feeds.
       const scopeId = courseId ?? (subjectCommunityId ? `subject:${subjectCommunityId}` : 'general');
 
-      const access = await verifyCourseCommunityAccess(userId, req.user!.role, courseId || null);
+      if (courseId && !isUuid(courseId)) return res.status(400).json({ message: 'Invalid course id' });
+      if (req.organization && !courseId) return res.status(404).json({ message: 'Organization community posts require a course.' });
+
+      const access = await verifyCourseCommunityAccess(req, userId, req.user!.role, courseId || null);
       if (!access.allowed) {
         return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
       }
@@ -402,8 +478,12 @@ export function createCommunityRouter(io: Server) {
       const userId = req.user!.id;
 
       const postRows = await db.select().from(communityPosts).where(eq(communityPosts.id, postId)).limit(1);
-      if (postRows.length === 0) {
+      if (postRows.length === 0 || !(await postBelongsToRequestScope(req, postRows[0]))) {
         return res.status(404).json({ message: 'Post not found' });
+      }
+      if (postRows[0].courseId) {
+        const access = await verifyCourseCommunityAccess(req, userId, req.user!.role, postRows[0].courseId);
+        if (!access.allowed) return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
       }
 
       const existing = await db
@@ -443,7 +523,7 @@ export function createCommunityRouter(io: Server) {
       const userId = req.user!.id;
 
       const postRows = await db.select().from(communityPosts).where(eq(communityPosts.id, postId)).limit(1);
-      if (postRows.length === 0) {
+      if (postRows.length === 0 || !(await postBelongsToRequestScope(req, postRows[0]))) {
         return res.status(404).json({ message: 'Post not found' });
       }
 
@@ -454,6 +534,8 @@ export function createCommunityRouter(io: Server) {
         if (courseRows.length === 0) {
           return res.status(404).json({ message: 'Course not found' });
         }
+        const access = await verifyCourseCommunityAccess(req, userId, req.user!.role, post.courseId);
+        if (!access.allowed) return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
         if (courseRows[0].instructorId !== userId) {
           return res.status(403).json({ message: 'Forbidden' });
         }
@@ -484,14 +566,14 @@ export function createCommunityRouter(io: Server) {
       }
 
       const postRows = await db.select().from(communityPosts).where(eq(communityPosts.id, postId)).limit(1);
-      if (postRows.length === 0) {
+      if (postRows.length === 0 || !(await postBelongsToRequestScope(req, postRows[0]))) {
         return res.status(404).json({ message: 'Post not found' });
       }
 
       const post = postRows[0];
       const scopeId = post.courseId ?? 'general';
 
-      const access = await verifyCourseCommunityAccess(userId, req.user!.role, post.courseId);
+      const access = await verifyCourseCommunityAccess(req, userId, req.user!.role, post.courseId);
       if (!access.allowed) {
         return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
       }
@@ -587,6 +669,14 @@ export function createCommunityRouter(io: Server) {
         .limit(1);
       if (replyRows.length === 0) {
         return res.status(404).json({ message: 'Reply not found' });
+      }
+      const [post] = await db.select().from(communityPosts).where(eq(communityPosts.id, replyRows[0].postId)).limit(1);
+      if (!post || !(await postBelongsToRequestScope(req, post))) {
+        return res.status(404).json({ message: 'Reply not found' });
+      }
+      if (post.courseId) {
+        const access = await verifyCourseCommunityAccess(req, userId, req.user!.role, post.courseId);
+        if (!access.allowed) return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
       }
 
       const existing = await db

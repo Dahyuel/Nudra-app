@@ -13,6 +13,8 @@ import {
   jsonb,
   unique,
   uniqueIndex,
+  index,
+  AnyPgColumn,
   check,
   customType,
 } from 'drizzle-orm/pg-core';
@@ -31,7 +33,12 @@ const vector768 = customType<{ data: number[] }>({
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: varchar('name', { length: 255 }).notNull(),
-  email: varchar('email', { length: 255 }).notNull().unique(),
+  // NULL identifies a global Nudra account. Tenant accounts are unique only
+  // within their organization, so one email can have independent realm users.
+  // The FK is declared in the SQL migration. Keeping this TypeScript column
+  // reference-free avoids a circular type inference loop with organizations.ownerId.
+  organizationId: uuid('organization_id'),
+  email: varchar('email', { length: 255 }).notNull(),
   passwordHash: varchar('password_hash', { length: 255 }).notNull(),
   role: roleEnum('role').notNull().default('student'),
   avatarUrl: text('avatar_url'),
@@ -46,7 +53,12 @@ export const users = pgTable('users', {
   notifySessions: boolean('notify_sessions').notNull().default(true),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
-});
+}, (table) => [
+  check('users_organization_role_check', sql`${table.organizationId} IS NULL OR ${table.role} IN ('student', 'instructor')`),
+  uniqueIndex('users_global_email_unique').on(table.email).where(sql`${table.organizationId} IS NULL`),
+  uniqueIndex('users_organization_email_unique').on(table.organizationId, table.email).where(sql`${table.organizationId} IS NOT NULL`),
+  index('users_organization_id_idx').on(table.organizationId),
+]);
 
 export const organizations = pgTable('organizations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -170,7 +182,8 @@ export const courses = pgTable('courses', {
   instructorId: uuid('instructor_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
-  organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'set null' }),
+  // Deleting an organization must never detach its courses into the global catalog.
+  organizationId: uuid('organization_id').references(() => organizations.id, { onDelete: 'restrict' }),
   title: varchar('title', { length: 255 }).notNull(),
   titleAr: varchar('title_ar', { length: 255 }),
   subtitle: varchar('subtitle', { length: 255 }),
@@ -195,6 +208,51 @@ export const courses = pgTable('courses', {
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });
+
+// Shared academic and general-course taxonomy. Catalog records describe the
+// classification tree; course_catalog_items allows one course to be browsed
+// through more than one related node without changing the legacy category.
+export const catalogItems = pgTable('catalog_items', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  track: varchar('track', { length: 20 }).notNull(),
+  kind: varchar('kind', { length: 30 }).notNull(),
+  parentId: uuid('parent_id').references((): AnyPgColumn => catalogItems.id, { onDelete: 'restrict' }),
+  slug: varchar('slug', { length: 160 }).notNull(),
+  nameEn: varchar('name_en', { length: 255 }).notNull(),
+  nameAr: varchar('name_ar', { length: 255 }),
+  description: text('description'),
+  displayOrder: integer('display_order').notNull().default(0),
+  isVisible: boolean('is_visible').notNull().default(false),
+  provenance: varchar('provenance', { length: 80 }).notNull().default('admin'),
+  archivedAt: timestamp('archived_at', { withTimezone: true }),
+  metadata: jsonb('metadata').$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  check('catalog_items_track_kind_check', sql`
+    (${table.track} = 'general' AND ${table.kind} IN ('general_field', 'specialization')) OR
+    (${table.track} = 'school' AND ${table.kind} IN ('curriculum', 'stage', 'qualification', 'grade', 'subject', 'syllabus_version')) OR
+    (${table.track} = 'university' AND ${table.kind} IN ('university', 'faculty', 'program', 'module'))
+  `),
+  check('catalog_items_display_order_check', sql`${table.displayOrder} >= 0`),
+  check('catalog_items_metadata_object_check', sql`jsonb_typeof(${table.metadata}) = 'object'`),
+  uniqueIndex('catalog_items_parent_slug_unique').on(
+    table.track,
+    sql`COALESCE(${table.parentId}, '00000000-0000-0000-0000-000000000000'::uuid)`,
+    table.slug,
+  ),
+  index('catalog_items_track_parent_order_idx').on(table.track, table.parentId, table.displayOrder),
+  index('catalog_items_visible_tree_idx').on(table.track, table.parentId, table.isVisible).where(sql`${table.archivedAt} IS NULL`),
+]);
+
+export const courseCatalogItems = pgTable('course_catalog_items', {
+  courseId: uuid('course_id').notNull().references(() => courses.id, { onDelete: 'cascade' }),
+  catalogItemId: uuid('catalog_item_id').notNull().references(() => catalogItems.id, { onDelete: 'restrict' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  unique('course_catalog_items_course_item_unique').on(table.courseId, table.catalogItemId),
+  index('course_catalog_items_item_course_idx').on(table.catalogItemId, table.courseId),
+]);
 
 export const courseSections = pgTable('course_sections', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -627,6 +685,7 @@ export const sanaweyaProfiles = pgTable('sanaweya_profiles', {
   track: varchar('track', { length: 20 }),
   schoolName: varchar('school_name', { length: 255 }),
   governorate: varchar('governorate', { length: 255 }),
+  catalogGradeId: uuid('catalog_grade_id').references(() => catalogItems.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });
@@ -641,6 +700,7 @@ export const pastExams = pgTable('past_exams', {
   pdfUrl: text('pdf_url').notNull(),
   answerKeyUrl: text('answer_key_url'),
   isPublished: boolean('is_published').notNull().default(true),
+  catalogSubjectId: uuid('catalog_subject_id').references(() => catalogItems.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 

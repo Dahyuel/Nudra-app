@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { eq, and, asc, desc, sql } from 'drizzle-orm';
+import { eq, and, asc, desc, sql, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import {
@@ -64,11 +64,16 @@ async function getCourseTitle(courseId: string | null): Promise<string | null> {
   return rows[0]?.title ?? null;
 }
 
-async function verifyConversationOwnership(conversationId: string, studentId: string) {
-  const rows = await db
-    .select()
+async function verifyConversationOwnership(conversationId: string, studentId: string, organizationId?: string) {
+  const courseScope = organizationId ? eq(courses.organizationId, organizationId) : isNull(courses.organizationId);
+  const rows = await db.select({ id: aiConversations.id })
     .from(aiConversations)
-    .where(and(eq(aiConversations.id, conversationId), eq(aiConversations.studentId, studentId)))
+    .leftJoin(courses, eq(aiConversations.courseId, courses.id))
+    .where(and(
+      eq(aiConversations.id, conversationId),
+      eq(aiConversations.studentId, studentId),
+      or(isNull(aiConversations.courseId), courseScope),
+    ))
     .limit(1);
   return rows.length > 0;
 }
@@ -185,7 +190,7 @@ router.post('/chat', chatLimiter, async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'conversationId is required' });
     }
 
-    const owns = await verifyConversationOwnership(conversationId, studentId);
+    const owns = await verifyConversationOwnership(conversationId, studentId, req.organization?.id);
     if (!owns) {
       return res.status(403).json({ message: 'Forbidden' });
     }
@@ -246,7 +251,7 @@ router.post('/chat', chatLimiter, async (req: Request, res: Response) => {
 
     const history = historyRows.slice(1).reverse();
 
-    const courseTitle = await getCourseTitle(courseId ?? null);
+    const courseTitle = await getCourseTitle(effectiveCourseId ?? null);
     const contextIntro = courseTitle ? `an expert educational assistant for ${courseTitle}` : 'general learning';
     const contextBlock = context
       ? `Here is relevant content from the course materials:\n\n${context}\n\nBase your answer on this content when relevant.`
@@ -309,6 +314,7 @@ router.get('/conversations', async (req: Request, res: Response) => {
   try {
     const studentId = req.user!.id;
 
+    const courseScope = req.organization ? eq(courses.organizationId, req.organization.id) : isNull(courses.organizationId);
     const rows = await db
       .select({
         id: aiConversations.id,
@@ -318,7 +324,10 @@ router.get('/conversations', async (req: Request, res: Response) => {
       })
       .from(aiConversations)
       .leftJoin(courses, eq(aiConversations.courseId, courses.id))
-      .where(eq(aiConversations.studentId, studentId))
+      .where(and(
+        eq(aiConversations.studentId, studentId),
+        or(isNull(aiConversations.courseId), courseScope),
+      ))
       .orderBy(desc(aiConversations.createdAt));
 
     const conversations = await Promise.all(
@@ -361,7 +370,7 @@ router.delete('/conversations/:conversationId', async (req: Request, res: Respon
     const studentId = req.user!.id;
     const { conversationId } = req.params;
 
-    const owns = await verifyConversationOwnership(conversationId, studentId);
+    const owns = await verifyConversationOwnership(conversationId, studentId, req.organization?.id);
     if (!owns) {
       return res.status(403).json({ message: 'Forbidden' });
     }
@@ -379,7 +388,7 @@ router.get('/conversations/:conversationId/messages', async (req: Request, res: 
     const studentId = req.user!.id;
     const { conversationId } = req.params;
 
-    const owns = await verifyConversationOwnership(conversationId, studentId);
+    const owns = await verifyConversationOwnership(conversationId, studentId, req.organization?.id);
     if (!owns) {
       return res.status(403).json({ message: 'Forbidden' });
     }
@@ -483,6 +492,9 @@ router.get('/flashcards/:lessonId', async (req: Request, res: Response) => {
     const userId = req.user!.id;
     const { lessonId } = req.params;
 
+    const access = await verifyLessonAccess(lessonId, userId, req.user!.role, req.organization?.id);
+    if (!access.allowed) return res.status(access.status).json({ message: access.message });
+
     const rows = await db
       .select({ id: flashcards.id, question: flashcards.question, answer: flashcards.answer })
       .from(flashcards)
@@ -574,6 +586,11 @@ router.post('/weak-topics/:courseId', requireRole('student'), weakTopicsLimiter,
     const studentId = req.user!.id;
     const { courseId } = req.params;
 
+    if (!z.string().uuid().safeParse(courseId).success) return res.status(400).json({ message: 'Invalid course id' });
+    if (!(await verifyCourseTenant(studentId, courseId, req.organization?.id))) {
+      return res.status(404).json({ message: 'Course not found' });
+    }
+
     const enr = await db
       .select()
       .from(enrollments)
@@ -583,7 +600,7 @@ router.post('/weak-topics/:courseId', requireRole('student'), weakTopicsLimiter,
       return res.status(403).json({ message: 'Not enrolled in this course' });
     }
 
-    const result = await generateWeakTopics(studentId, courseId);
+    const result = await generateWeakTopics(studentId, courseId, req.organization?.id ?? null);
     if ('error' in result) {
       return res.status(422).json({ message: result.error });
     }
@@ -604,6 +621,11 @@ router.get('/weak-topics/:courseId', requireRole('student'), async (req: Request
   try {
     const studentId = req.user!.id;
     const { courseId } = req.params;
+
+    if (!z.string().uuid().safeParse(courseId).success) return res.status(400).json({ message: 'Invalid course id' });
+    if (!(await verifyCourseTenant(studentId, courseId, req.organization?.id))) {
+      return res.status(404).json({ message: 'Course not found' });
+    }
 
     const rows = await db
       .select()

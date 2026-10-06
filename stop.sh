@@ -48,10 +48,11 @@ BACKEND_DIR="$ROOT_DIR/backend"
 PROXY_DIR="$ROOT_DIR/deepseek-web-to-api-main"
 stop_process_group frontend
 stop_process_group backend
+stop_process_group video-worker
 stop_process_group deepseek
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   docker compose -f "$ROOT_DIR/docker-compose.yml" --env-file "$ROOT_DIR/.env" down
 else
   echo "[Nudra] Docker is not running; no development containers to stop."
 fi
-echo "[Nudra] Local app, DeepSeek proxy, and Nudra development containers stopped. Named Docker volumes were preserved."
+echo "[Nudra] Local app, video worker, DeepSeek proxy, and Nudra development containers stopped. Named Docker volumes were preserved."

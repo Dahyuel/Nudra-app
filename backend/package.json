@@ -5,6 +5,7 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "dev:worker": "tsx watch src/workers/transcodeWorker.ts",
     "db:push": "drizzle-kit push",
     "db:migrate": "node dist/scripts/migrate.js",
     "db:seed": "tsx src/db/seed.ts",

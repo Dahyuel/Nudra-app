@@ -3,17 +3,21 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Plus, Star, Edit3, Eye, EyeOff, Globe, Trash2, AlertTriangle } from 'lucide-react';
 import { useInstructorCourses } from '../../hooks/useInstructorCourses';
+import { useAuth } from '../../context/AuthContext';
 import api from '../../lib/api';
+import { OfflineCourseSessionManager } from './OfflineCourseSessionManager';
 
 type CourseRow = ReturnType<typeof useInstructorCourses>['courses'][number];
 
 export const InstructorCoursesPage: React.FC = () => {
   const { courses, isLoading, error } = useInstructorCourses();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<CourseRow | null>(null);
+  const orgQuery = user?.organizationContext ? `?org=${encodeURIComponent(user.organizationContext.slug)}` : '';
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['instructor-courses'] });
 
@@ -65,7 +69,7 @@ export const InstructorCoursesPage: React.FC = () => {
         </div>
 
         <Link
-          to="/instructor/upload"
+          to={`/instructor/upload${orgQuery}`}
           className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#2D6A4F] hover:bg-[#23533e] text-white text-xs sm:text-sm font-bold shadow-sm transition-all self-start sm:self-auto"
         >
           <Plus className="w-4 h-4" />
@@ -159,14 +163,14 @@ export const InstructorCoursesPage: React.FC = () => {
                       <td className="py-4 px-2">
                         <div className="flex items-center justify-end gap-2 flex-wrap">
                           {course.approvalStatus === 'approved' && <button
-                            onClick={() => navigate(`/instructor/upload?edit=${course.id}`)}
+                            onClick={() => navigate(`/instructor/upload${orgQuery ? `${orgQuery}&` : '?'}edit=${encodeURIComponent(course.id)}`)}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#2D6A4F] text-white text-xs font-bold hover:bg-[#23533e] transition-colors"
                           >
                             <Edit3 className="w-3.5 h-3.5" />
                             <span>Edit</span>
                           </button>}
                           <button
-                            onClick={() => navigate(`/course/${course.id}`)}
+                            onClick={() => navigate(`/course/${course.id}${orgQuery}`)}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-gray-200 text-xs font-bold text-gray-700 hover:bg-[#F8FAF9] transition-colors"
                           >
                             <Eye className="w-3.5 h-3.5" />
@@ -207,6 +211,16 @@ export const InstructorCoursesPage: React.FC = () => {
           </table>
         </div>
       </div>
+
+      {courses.some((course) => course.deliveryMode === 'offline' && course.approvalStatus === 'approved') && <section className="space-y-4" aria-label="Offline course schedule management">
+        <div>
+          <h2 className="text-xl font-extrabold text-gray-900">Offline course sessions</h2>
+          <p className="mt-1 text-sm text-gray-500">Schedule bookable dates for your approved offline courses, including courses in your organization.</p>
+        </div>
+        {courses.filter((course) => course.deliveryMode === 'offline' && course.approvalStatus === 'approved').map((course) => (
+          <OfflineCourseSessionManager key={course.id} course={course} />
+        ))}
+      </section>}
 
       {confirmDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">

@@ -8,7 +8,7 @@ function rootDomains() {
   const configured = (process.env.ORGANIZATION_ROOT_DOMAINS || process.env.BASE_DOMAIN || 'nudra.org,nudra.com,localhost')
     .split(',').map((value) => normalizeHostname(value)).filter(Boolean) as string[];
   for (const fixed of ['localhost', '127.0.0.1']) if (!configured.includes(fixed)) configured.push(fixed);
-  return new Set(configured.flatMap((domain) => [domain, `www.${domain}`, `api.${domain}`, `app.${domain}`, `assets.${domain}`]));
+  return new Set(configured);
 }
 
 export async function resolveOrg(req: Request, res: Response, next: NextFunction) {
@@ -36,26 +36,42 @@ export async function resolveOrg(req: Request, res: Response, next: NextFunction
       }
       host = normalizedHint;
     }
-    const parts = host.split('.');
     const knownRoots = rootDomains();
-    const subdomain = parts.length > 2 && !knownRoots.has(host) && parts[0] !== 'www'
-      ? parts[0]
-      : undefined;
+    let requestedSlug: string | undefined;
+    let isPlatformHost = knownRoots.has(host);
+    for (const root of knownRoots) {
+      if (host === root || ['www', 'api', 'app', 'assets'].some((service) => host === `${service}.${root}`)) {
+        isPlatformHost = true;
+        break;
+      }
+      const suffix = `.${root}`;
+      if (host.endsWith(suffix)) {
+        const label = host.slice(0, -suffix.length);
+        if (label && !label.includes('.')) {
+          if (['www', 'api', 'app', 'assets'].includes(label)) isPlatformHost = true;
+          else requestedSlug = label;
+          break;
+        }
+      }
+    }
     // The slug header is useful for local development on localhost. In
     // production, tenant identity always comes from a verified hostname.
     const developmentSlug = process.env.NODE_ENV !== 'production' &&
       ['localhost', '127.0.0.1'].includes(host)
       ? req.get('x-organization-slug')
       : undefined;
-    const requestedSlug = String(subdomain || developmentSlug || '').trim().toLowerCase();
-    if (!requestedSlug && knownRoots.has(host)) return next();
+    requestedSlug = String(requestedSlug || developmentSlug || '').trim().toLowerCase() || undefined;
+    if (!requestedSlug && isPlatformHost) return next();
 
-    const [org] = await db.select().from(organizations).where(
-      requestedSlug
-        ? or(eq(organizations.slug, requestedSlug), and(eq(organizations.customDomain, host), eq(organizations.customDomainStatus, 'active'), isNotNull(organizations.customDomainVerifiedAt)))
-        : and(eq(organizations.customDomain, host), eq(organizations.customDomainStatus, 'active'), isNotNull(organizations.customDomainVerifiedAt))
-    ).limit(1);
-    if (!org || !org.isActive) return res.status(404).json({ message: 'Organization not found' });
+    const hostnameMatch = requestedSlug
+      ? eq(organizations.slug, requestedSlug)
+      : eq(organizations.customDomain, host);
+    const [org] = await db.select().from(organizations).where(and(
+      hostnameMatch,
+      eq(organizations.isActive, true),
+      ...(requestedSlug ? [] : [eq(organizations.customDomainStatus, 'active'), isNotNull(organizations.customDomainVerifiedAt)]),
+    )).limit(1);
+    if (!org) return res.status(404).json({ message: 'Organization not found' });
     req.organization = org;
     return next();
   } catch (err) {

@@ -6,7 +6,7 @@
 //   npm run admin -- revoke <email>                  (admin -> student)
 import bcrypt from 'bcryptjs';
 import { randomBytes } from 'crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { users, sessions } from '../db/schema';
 
@@ -28,7 +28,9 @@ const normalize = (email: string) => email.toLowerCase().trim();
 const generatePassword = () => `${randomBytes(12).toString('base64url')}Aa1`;
 
 async function findUser(email: string) {
-  const rows = await db.select().from(users).where(eq(users.email, normalize(email))).limit(1);
+  const rows = await db.select({ id: users.id, email: users.email, role: users.role }).from(users).where(and(
+    eq(users.email, normalize(email)), isNull(users.organizationId),
+  )).limit(1);
   return rows[0] ?? null;
 }
 
@@ -36,7 +38,7 @@ async function list() {
   const rows = await db
     .select({ email: users.email, name: users.name, createdAt: users.createdAt })
     .from(users)
-    .where(eq(users.role, 'admin'));
+    .where(and(eq(users.role, 'admin'), isNull(users.organizationId)));
   if (rows.length === 0) return console.log('No admin accounts yet. Create one with: npm run admin -- create <email> <name>');
   console.table(rows.map((r) => ({ ...r, createdAt: r.createdAt.toISOString().slice(0, 10) })));
 }
@@ -49,7 +51,7 @@ async function create(email: string, name: string) {
     return;
   }
   if (await findUser(normalized)) {
-    console.error(`${normalized} already exists. Use "promote" for an existing student account.`);
+    console.error(`${normalized} already exists in Nudra's global account realm. Use "promote" for an existing global student account.`);
     process.exitCode = 1;
     return;
   }

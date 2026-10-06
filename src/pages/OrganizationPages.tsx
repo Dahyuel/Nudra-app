@@ -213,10 +213,25 @@ export const OrganizationManagerPage: React.FC = () => {
 
   if (error && !current) return <div className={panel}><p className="text-red-700">{error}</p></div>;
   if (!current) return <div className="p-12 text-center text-gray-500">Loading manager dashboard…</div>;
+  const pendingCourseCount = managerCourses.filter((course) => course.approvalStatus === 'pending').length;
   return <div className="mx-auto max-w-5xl space-y-6">
     <header><p className="text-sm text-gray-500">Organization</p><h1 className="text-3xl font-bold">{current.organization.name} manager</h1></header>
     <ManagerTabs slug={current.organization.slug} />
     {error && <p className="rounded-xl bg-red-50 p-3 text-sm text-red-800">{error}</p>}
+    <section className="grid gap-3 sm:grid-cols-3" aria-label="Organization manager overview">
+      <a href="#student-requests" className="rounded-2xl border border-amber-200 bg-amber-50 p-5 transition hover:border-amber-300">
+        <p className="text-sm font-medium text-amber-900">Student requests to review</p>
+        <p className="mt-2 text-3xl font-extrabold text-amber-950">{requests.length}</p>
+      </a>
+      <a href="#course-approvals" className="rounded-2xl border border-blue-200 bg-blue-50 p-5 transition hover:border-blue-300">
+        <p className="text-sm font-medium text-blue-900">Course submissions awaiting review</p>
+        <p className="mt-2 text-3xl font-extrabold text-blue-950">{pendingCourseCount}</p>
+      </a>
+      <div className="rounded-2xl border border-gray-200 bg-white p-5">
+        <p className="text-sm font-medium text-gray-600">Active organization members</p>
+        <p className="mt-2 text-3xl font-extrabold text-gray-900">{members.filter((member) => member.membership.status === 'active').length}</p>
+      </div>
+    </section>
     <section className={panel}><h2 className="text-lg font-semibold">Invite an instructor</h2>
       <form className="mt-4 grid gap-3 sm:grid-cols-[1fr_1fr_auto]" onSubmit={submit}>
         <input className="min-w-0 rounded-xl border border-gray-200 px-4 py-3" value={instructorName} onChange={(e) => setInstructorName(e.target.value)} placeholder="Instructor full name (new account only)" />
@@ -236,7 +251,7 @@ export const OrganizationManagerPage: React.FC = () => {
         <button disabled={busy} className={`${button} sm:col-span-2`}><BookOpen size={16} /> Create course</button>
       </form>
     </section>
-    <section className={panel}><h2 className="text-lg font-semibold">Organization courses ({managerCourses.length})</h2><div className="mt-4 divide-y divide-gray-100">{managerCourses.map((course) => <div key={course.id} className="flex flex-col justify-between gap-3 py-4 sm:flex-row sm:items-center"><div><p className="font-semibold">{course.title} <span className="ml-2 rounded-full bg-gray-100 px-2 py-1 text-xs capitalize">{course.deliveryMode}</span></p><p className="text-sm text-gray-500">By {course.instructorName} · {course.approvalStatus}{course.location ? ` · ${course.location}` : ''}</p></div>{course.approvalStatus === 'pending' && <div className="flex gap-2"><button disabled={busy} onClick={() => void decideCourse(course.id, 'approve')} className="rounded-lg bg-emerald-50 p-2 text-emerald-800" aria-label="Approve course"><Check size={18} /></button><button disabled={busy} onClick={() => void decideCourse(course.id, 'reject')} className="rounded-lg bg-red-50 p-2 text-red-700" aria-label="Reject course"><X size={18} /></button></div>}{course.approvalStatus === 'approved' && <button disabled={busy} onClick={() => void toggleOrgCourse(course)} className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold">{course.isPublished ? 'Take offline' : 'Publish'}</button>}</div>)}{!managerCourses.length && <p className="py-4 text-sm text-gray-500">No organization courses yet.</p>}</div></section>
+    <section id="course-approvals" className={panel}><h2 className="text-lg font-semibold">Organization courses ({managerCourses.length})</h2><div className="mt-4 divide-y divide-gray-100">{managerCourses.map((course) => <div key={course.id} className="flex flex-col justify-between gap-3 py-4 sm:flex-row sm:items-center"><div><p className="font-semibold">{course.title} <span className="ml-2 rounded-full bg-gray-100 px-2 py-1 text-xs capitalize">{course.deliveryMode}</span></p><p className="text-sm text-gray-500">By {course.instructorName} · {course.approvalStatus}{course.location ? ` · ${course.location}` : ''}</p></div>{course.approvalStatus === 'pending' && <div className="flex gap-2"><button disabled={busy} onClick={() => void decideCourse(course.id, 'approve')} className="rounded-lg bg-emerald-50 p-2 text-emerald-800" aria-label="Approve course"><Check size={18} /></button><button disabled={busy} onClick={() => void decideCourse(course.id, 'reject')} className="rounded-lg bg-red-50 p-2 text-red-700" aria-label="Reject course"><X size={18} /></button></div>}{course.approvalStatus === 'approved' && <button disabled={busy} onClick={() => void toggleOrgCourse(course)} className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold">{course.isPublished ? 'Take offline' : 'Publish'}</button>}</div>)}{!managerCourses.length && <p className="py-4 text-sm text-gray-500">No organization courses yet.</p>}</div></section>
     <section className={panel}><h2 className="text-lg font-semibold">Brand and domain</h2>
       <form onSubmit={saveBrand} className="mt-4 grid gap-4 sm:grid-cols-2">
         <label className="text-sm font-medium">Organization name<input required value={brand.name} onChange={(e) => setBrand({ ...brand, name: e.target.value })} className="mt-1 block w-full rounded-xl border border-gray-200 px-4 py-3" /></label>
@@ -250,7 +265,7 @@ export const OrganizationManagerPage: React.FC = () => {
         {current.organization.customDomainStatus !== 'active' && <><p className="mt-3 text-sm text-gray-600">Add these records at your domain provider, then check the connection again. DNS changes can take time to appear.</p><div className="mt-3 overflow-x-auto"><table className="w-full min-w-[560px] text-left text-sm"><thead><tr className="border-b text-xs uppercase text-gray-500"><th className="py-2 pr-3">Type</th><th className="py-2 pr-3">Name</th><th className="py-2 pr-3">Value</th><th className="py-2">Purpose</th></tr></thead><tbody>{(current.organization.customDomainDnsRecords || []).map((record, index) => <tr key={`${record.type}-${record.name}-${index}`} className="border-b last:border-0"><td className="py-2 pr-3 font-mono">{record.type}</td><td className="py-2 pr-3 font-mono">{record.name}</td><td className="py-2 pr-3 font-mono">{record.value}</td><td className="py-2 text-gray-600">{record.purpose}</td></tr>)}</tbody></table></div></>}
       </div>}
     </section>
-    <section className={panel}><h2 className="text-lg font-semibold">Student requests ({requests.length})</h2>
+    <section id="student-requests" className={panel}><h2 className="text-lg font-semibold">Student requests ({requests.length})</h2>
       <div className="mt-4 divide-y divide-gray-100">{requests.filter((r) => r.membership.role === 'student').map((person) => <div key={person.membership.id} className="flex flex-col justify-between gap-3 py-4 sm:flex-row sm:items-center">
         <div><p className="font-semibold">{person.name}</p><p className="text-sm text-gray-500">{person.email}</p></div>
         <div className="flex gap-2"><button disabled={busy} onClick={() => void decision(person.membership.id, 'approve')} className="rounded-lg bg-emerald-50 p-2 text-emerald-800" aria-label="Approve"><Check size={18} /></button><button disabled={busy} onClick={() => void decision(person.membership.id, 'reject')} className="rounded-lg bg-red-50 p-2 text-red-700" aria-label="Reject"><X size={18} /></button></div>

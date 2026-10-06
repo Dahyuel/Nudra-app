@@ -5,7 +5,7 @@
 //   npm run instructors -- show <email>
 //   npm run instructors -- approve <email>
 //   npm run instructors -- reject <email> [note...]
-import { eq, desc } from 'drizzle-orm';
+import { and, eq, desc, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { users, instructorApplications } from '../db/schema';
 import { reviewInstructorApplication } from '../lib/instructorReview';
@@ -26,20 +26,22 @@ const usage = () => {
 
 async function findApplication(email: string) {
   const rows = await db
-    .select({ user: users, application: instructorApplications })
+    .select({ user: { id: users.id, name: users.name, email: users.email }, application: instructorApplications })
     .from(instructorApplications)
     .innerJoin(users, eq(instructorApplications.userId, users.id))
-    .where(eq(users.email, email.toLowerCase().trim()))
+    .where(and(eq(users.email, email.toLowerCase().trim()), isNull(users.organizationId)))
     .limit(1);
   return rows[0] ?? null;
 }
 
 async function list(filter: Status | 'all') {
   const rows = await db
-    .select({ user: users, application: instructorApplications })
+    .select({ user: { id: users.id, name: users.name, email: users.email }, application: instructorApplications })
     .from(instructorApplications)
     .innerJoin(users, eq(instructorApplications.userId, users.id))
-    .where(filter === 'all' ? undefined : eq(instructorApplications.status, filter))
+    .where(filter === 'all'
+      ? isNull(users.organizationId)
+      : and(eq(instructorApplications.status, filter), isNull(users.organizationId)))
     .orderBy(desc(instructorApplications.createdAt));
 
   if (rows.length === 0) {

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import express from 'express';
 import multer from 'multer';
+import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
 import { randomUUID } from 'crypto';
 import { eq, and, count, avg, sum, inArray, sql, desc, isNull, gt, lt } from 'drizzle-orm';
@@ -33,6 +34,7 @@ import {
   orgMemberships,
 } from '../db/schema';
 import { requireAuth, requireRole } from '../middleware/requireAuth';
+import { createRedisRateLimitStore } from '../middleware/rateLimit';
 import {
   r2Client,
   minioClient,
@@ -48,8 +50,8 @@ import { chatCompletion } from '../lib/deepseek';
 
 const router = Router();
 
-const courseScope = (req: Request) => req.organization
-  ? eq(courses.organizationId, req.organization.id)
+const courseScope = (req: Request) => req.user?.organizationId
+  ? eq(courses.organizationId, req.user.organizationId)
   : isNull(courses.organizationId);
 const courseById = (req: Request, id: string) => and(eq(courses.id, id), courseScope(req));
 const instructorCourses = (req: Request, instructorId: string) => and(eq(courses.instructorId, instructorId), courseScope(req));
@@ -70,6 +72,24 @@ const upload = multer({
 const ALLOWED_VIDEO_EXT = ['mp4', 'mov', 'mkv', 'webm', 'avi'];
 const VIDEO_PART_SIZE = 8 * 1024 * 1024;
 const MAX_VIDEO_SIZE = 2 * 1024 * 1024 * 1024;
+const configuredUploadStartsPerHour = Number(process.env.VIDEO_UPLOAD_START_LIMIT_PER_HOUR);
+const videoUploadStartLimit = Number.isSafeInteger(configuredUploadStartsPerHour) && configuredUploadStartsPerHour > 0
+  ? Math.min(configuredUploadStartsPerHour, 100)
+  : 8;
+const configuredMaxActiveVideoUploads = Number(process.env.VIDEO_MAX_ACTIVE_UPLOADS);
+const maxActiveVideoUploads = Number.isSafeInteger(configuredMaxActiveVideoUploads) && configuredMaxActiveVideoUploads > 0
+  ? Math.min(configuredMaxActiveVideoUploads, 100)
+  : 8;
+const videoUploadStartLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: videoUploadStartLimit,
+  keyGenerator: (req) => req.user!.id,
+  store: createRedisRateLimitStore('nudra:rate:video-upload-start'),
+  passOnStoreError: false,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: 'Too many video uploads started. Please try again later.' },
+});
 
 // S3 multipart uploads do not disappear when a browser closes. Expire and
 // abort abandoned sessions so incomplete parts cannot consume disk forever.
@@ -156,9 +176,7 @@ router.get('/courses', async (req: Request, res: Response) => {
     const rows = await db
       .select()
       .from(courses)
-      .where(and(eq(courses.instructorId, instructorId), req.organization
-        ? eq(courses.organizationId, req.organization.id)
-        : isNull(courses.organizationId)))
+      .where(instructorCourses(req, instructorId))
       .orderBy(courses.createdAt);
 
     const ids = rows.map((r) => r.id);
@@ -320,7 +338,7 @@ router.post('/courses', async (req: Request, res: Response) => {
       .insert(courses)
       .values({
         instructorId,
-        organizationId: req.organization?.id ?? null,
+        organizationId: req.user!.organizationId,
         title,
         titleAr: title_ar ?? null,
         subtitle: subtitle ?? null,
@@ -333,7 +351,7 @@ router.post('/courses', async (req: Request, res: Response) => {
         durationText: duration_text ?? null,
         isPublished: false,
         deliveryMode: courseMode,
-        approvalStatus: req.organization ? 'pending' : 'approved',
+        approvalStatus: req.user!.organizationId ? 'pending' : 'approved',
         location: location ?? null,
         bookingUrl: booking_url ?? null,
         scheduleText: schedule_text ?? null,
@@ -360,12 +378,6 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
     if (existing[0].instructorId !== instructorId) {
       return res.status(403).json({ message: 'Forbidden' });
     }
-    const willChangeLiveCourse = req.organization && existing[0].approvalStatus === 'approved' && existing[0].isPublished && Object.keys(req.body ?? {}).some((key) => key !== 'sections');
-    if (willChangeLiveCourse) {
-      // Changes to a live organization course return it to manager review.
-      await db.update(courses).set({ isPublished: false, approvalStatus: 'pending', updatedAt: new Date() }).where(eq(courses.id, id));
-    }
-
     const parsed = courseBodySchema
       .extend({ sections: z.array(sectionSchema).max(50).optional() })
       .safeParse(req.body ?? {});
@@ -373,9 +385,16 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
     if (!parsed.success) {
       return res.status(400).json({ message: 'Invalid course data', errors: parsed.error.flatten() });
     }
-    if (parsed.data.delivery_mode === 'offline' && (!parsed.data.location || !parsed.data.schedule_text || !parsed.data.booking_url)) {
+    const resultingDeliveryMode = parsed.data.delivery_mode ?? existing[0].deliveryMode;
+    if (resultingDeliveryMode === 'offline' && (
+      !(parsed.data.location ?? existing[0].location) ||
+      !(parsed.data.schedule_text ?? existing[0].scheduleText) ||
+      !(parsed.data.booking_url ?? existing[0].bookingUrl)
+    )) {
       return res.status(400).json({ message: 'Offline courses need a location, schedule, and booking page URL.' });
     }
+
+    const organizationSubmissionChanged = req.user!.organizationId !== null && Object.keys(parsed.data).length > 0;
 
     const {
       title,
@@ -413,8 +432,10 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
     if (booking_url !== undefined) updateValues.bookingUrl = booking_url;
     if (schedule_text !== undefined) updateValues.scheduleText = schedule_text;
     if (capacity !== undefined) updateValues.capacity = capacity;
-    if (delivery_mode === 'offline') updateValues.price = '0';
-    if (req.organization && (existing[0].approvalStatus !== 'approved' || willChangeLiveCourse)) {
+    if (resultingDeliveryMode === 'offline') updateValues.price = '0';
+    if (organizationSubmissionChanged) {
+      // Any instructor edit to an organization course, including curriculum
+      // changes, must return it to manager review before it can be public again.
       updateValues.approvalStatus = 'pending';
       updateValues.isPublished = false;
     }
@@ -614,6 +635,16 @@ router.delete('/courses/:id', async (req: Request, res: Response) => {
       });
     }
 
+    const [{ value: bookingCount }] = await db.execute(sql`SELECT COUNT(b.id)::int AS value
+      FROM course_sessions s JOIN course_bookings b ON b.session_id=s.id
+      WHERE s.course_id=${course.id}`) as unknown as [{ value: number | string }];
+    if (Number(bookingCount) > 0) {
+      return res.status(409).json({
+        message: 'This course has booking history, so it can’t be deleted. Unpublish it to keep its attendance and reservation records.',
+        bookingCount: Number(bookingCount),
+      });
+    }
+
     const lessonIds = (
       await db.select({ id: lessons.id }).from(lessons).where(eq(lessons.courseId, course.id))
     ).map((l) => l.id);
@@ -684,7 +715,7 @@ async function getOwnedUpload(lessonId: string, uploadId: string, req: Request) 
   return session;
 }
 
-router.post('/lessons/:lessonId/video-uploads', async (req: Request, res: Response) => {
+router.post('/lessons/:lessonId/video-uploads', videoUploadStartLimiter, async (req: Request, res: Response) => {
   const parsed = z.object({
     fileName: z.string().trim().min(1).max(255),
     fileSize: z.number().int().positive().max(MAX_VIDEO_SIZE),
@@ -694,15 +725,6 @@ router.post('/lessons/:lessonId/video-uploads', async (req: Request, res: Respon
   const lessonId = req.params.lessonId;
   const lesson = await getOwnedLesson(lessonId, req);
   if (!lesson) return res.status(404).json({ message: 'Lesson not found.' });
-
-  const [activeUploadCount] = await db.select({ count: count() }).from(videoUploadSessions).where(and(
-    eq(videoUploadSessions.instructorId, req.user!.id),
-    eq(videoUploadSessions.status, 'uploading'),
-    gt(videoUploadSessions.expiresAt, new Date()),
-  ));
-  if (Number(activeUploadCount?.count || 0) >= 2) {
-    return res.status(429).json({ message: 'You already have two active video uploads. Finish or cancel one before starting another.' });
-  }
 
   const safeName = parsed.data.fileName.split(/[\\/]/).pop() || '';
   const extension = safeName.split('.').pop()?.toLowerCase() || '';
@@ -720,13 +742,41 @@ router.post('/lessons/:lessonId/video-uploads', async (req: Request, res: Respon
     const created = await minioClient.send(new CreateMultipartUploadCommand({
       Bucket: RAW_VIDEO_BUCKET, Key: storageKey, ContentType: contentType,
     }));
-    multipartUploadId = created.UploadId;
-    if (!multipartUploadId) throw new Error('Object storage did not return a multipart upload id.');
-    const [session] = await db.insert(videoUploadSessions).values({
-      lessonId, instructorId: req.user!.id, storageKey, multipartUploadId,
-      fileName: safeName, contentType, fileSize: parsed.data.fileSize,
-      partSize: VIDEO_PART_SIZE, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-    }).returning();
+    const createdUploadId = created.UploadId;
+    if (!createdUploadId) throw new Error('Object storage did not return a multipart upload id.');
+    multipartUploadId = createdUploadId;
+    const session = await db.transaction(async (tx) => {
+      // Serialize admission across API workers so concurrent starts cannot
+      // exceed either the per-instructor or platform-wide active quota.
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(721388501)`);
+      const [platformActiveUploadCount] = await tx.select({ count: count() }).from(videoUploadSessions).where(and(
+        eq(videoUploadSessions.status, 'uploading'),
+        gt(videoUploadSessions.expiresAt, new Date()),
+      ));
+      if (Number(platformActiveUploadCount?.count || 0) >= maxActiveVideoUploads) return 'platform-limit' as const;
+      const [activeUploadCount] = await tx.select({ count: count() }).from(videoUploadSessions).where(and(
+        eq(videoUploadSessions.instructorId, req.user!.id),
+        eq(videoUploadSessions.status, 'uploading'),
+        gt(videoUploadSessions.expiresAt, new Date()),
+      ));
+      if (Number(activeUploadCount?.count || 0) >= 2) return 'instructor-limit' as const;
+      const [createdSession] = await tx.insert(videoUploadSessions).values({
+        lessonId, instructorId: req.user!.id, storageKey, multipartUploadId: createdUploadId,
+        fileName: safeName, contentType, fileSize: parsed.data.fileSize,
+        partSize: VIDEO_PART_SIZE, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      }).returning();
+      return createdSession ?? null;
+    });
+    if (session === 'platform-limit' || session === 'instructor-limit' || !session) {
+      await minioClient.send(new AbortMultipartUploadCommand({
+        Bucket: RAW_VIDEO_BUCKET, Key: storageKey, UploadId: multipartUploadId,
+      })).catch((err) => console.warn('could not abort over-quota video upload', err));
+      multipartUploadId = undefined;
+      const message = session === 'platform-limit'
+        ? 'Video upload capacity is currently full. Please try again later.'
+        : 'You already have two active video uploads. Finish or cancel one before starting another.';
+      return res.status(429).json({ message });
+    }
     return res.status(201).json({
       uploadId: session.id, partSize: VIDEO_PART_SIZE,
       totalParts: Math.ceil(session.fileSize / VIDEO_PART_SIZE), expiresAt: session.expiresAt,
@@ -854,7 +904,7 @@ router.get('/lessons/:lessonId/video-status', async (req: Request, res: Response
       .select({ lesson: lessons, course: courses })
       .from(lessons)
       .innerJoin(courses, eq(lessons.courseId, courses.id))
-      .where(eq(lessons.id, lessonId))
+      .where(and(eq(lessons.id, lessonId), courseScope(req)))
       .limit(1);
 
     if (lessonRows.length === 0) {
@@ -894,7 +944,7 @@ router.post('/lessons/:lessonId/retry-transcript', async (req: Request, res: Res
       .select({ course: courses })
       .from(lessons)
       .innerJoin(courses, eq(lessons.courseId, courses.id))
-      .where(eq(lessons.id, lessonId.data))
+      .where(and(eq(lessons.id, lessonId.data), courseScope(req)))
       .limit(1);
     if (lessonRows.length === 0) return res.status(404).json({ message: 'Lesson not found' });
     if (lessonRows[0].course.instructorId !== instructorId) return res.status(403).json({ message: 'Forbidden' });
@@ -938,12 +988,12 @@ const quizBodySchema = z.object({
   questions: z.array(quizQuestionSchema).min(2).max(20),
 });
 
-async function verifyLessonOwnership(lessonId: string, instructorId: string) {
+async function verifyLessonOwnership(lessonId: string, instructorId: string, req: Request) {
   const rows = await db
     .select({ lesson: lessons, course: courses })
     .from(lessons)
     .innerJoin(courses, eq(lessons.courseId, courses.id))
-    .where(eq(lessons.id, lessonId))
+    .where(and(eq(lessons.id, lessonId), courseScope(req)))
     .limit(1);
   if (rows.length === 0) return { ok: false as const, status: 404, message: 'Lesson not found' };
   if (rows[0].course.instructorId !== instructorId) {
@@ -957,7 +1007,7 @@ router.post('/lessons/:lessonId/quiz', async (req: Request, res: Response) => {
     const instructorId = req.user!.id;
     const { lessonId } = req.params;
 
-    const ownership = await verifyLessonOwnership(lessonId, instructorId);
+    const ownership = await verifyLessonOwnership(lessonId, instructorId, req);
     if (!ownership.ok) {
       return res.status(ownership.status).json({ message: ownership.message });
     }
@@ -1023,7 +1073,7 @@ router.post('/lessons/:lessonId/quiz/generate', async (req: Request, res: Respon
     const instructorId = req.user!.id;
     const { lessonId } = req.params;
 
-    const ownership = await verifyLessonOwnership(lessonId, instructorId);
+    const ownership = await verifyLessonOwnership(lessonId, instructorId, req);
     if (!ownership.ok) {
       return res.status(ownership.status).json({ message: ownership.message });
     }
@@ -1091,7 +1141,7 @@ router.get('/lessons/:lessonId/quiz', async (req: Request, res: Response) => {
     const instructorId = req.user!.id;
     const { lessonId } = req.params;
 
-    const ownership = await verifyLessonOwnership(lessonId, instructorId);
+    const ownership = await verifyLessonOwnership(lessonId, instructorId, req);
     if (!ownership.ok) {
       return res.status(ownership.status).json({ message: ownership.message });
     }

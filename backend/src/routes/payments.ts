@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import { courses, enrollments, orders } from '../db/schema';
@@ -32,7 +32,9 @@ router.post('/checkout', async (req: Request, res: Response) => {
     const provider = getPaymentProvider();
     if (!provider) return res.status(503).json({ message: 'Payments are not available right now.' });
 
-    const [course] = await db.select().from(courses).where(eq(courses.id, courseId.data)).limit(1);
+    const [course] = await db.select().from(courses).where(and(
+      eq(courses.id, courseId.data), isNull(courses.organizationId),
+    )).limit(1);
     if (!course || !course.isPublished) return res.status(404).json({ message: 'Course not found' });
     if (course.deliveryMode === 'offline' || course.approvalStatus !== 'approved') return res.status(400).json({ message: 'Only approved online courses can be purchased.' });
     if (Number(course.price) <= 0) {
@@ -70,7 +72,7 @@ router.get('/orders/:id', async (req: Request, res: Response) => {
       .select({ order: orders, courseTitle: courses.title })
       .from(orders)
       .innerJoin(courses, eq(orders.courseId, courses.id))
-      .where(eq(orders.id, id.data))
+      .where(and(eq(orders.id, id.data), isNull(courses.organizationId)))
       .limit(1);
     if (!row || row.order.studentId !== req.user!.id) return res.status(404).json({ message: 'Order not found' });
     return res.json({ order: publicOrder(row.order, row.courseTitle), testMode: row.order.provider === 'test' });
@@ -89,7 +91,11 @@ router.post('/test/:id/complete', async (req: Request, res: Response) => {
     const outcome = z.enum(['paid', 'failed', 'cancelled']).safeParse(req.body?.outcome);
     if (!id.success || !outcome.success) return res.status(400).json({ message: 'Invalid request' });
 
-    const [order] = await db.select().from(orders).where(eq(orders.id, id.data)).limit(1);
+    const [orderRow] = await db.select({ order: orders }).from(orders)
+      .innerJoin(courses, eq(orders.courseId, courses.id))
+      .where(and(eq(orders.id, id.data), isNull(courses.organizationId)))
+      .limit(1);
+    const order = orderRow?.order;
     if (!order || order.studentId !== req.user!.id || order.provider !== 'test') {
       return res.status(404).json({ message: 'Order not found' });
     }

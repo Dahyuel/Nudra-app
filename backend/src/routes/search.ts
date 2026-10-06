@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { eq, and, ilike, or, desc } from 'drizzle-orm';
+import { eq, and, ilike, or, desc, isNull, isNotNull } from 'drizzle-orm';
 import { db } from '../db';
 import { courses, users, lessons, communityPosts } from '../db/schema';
 
@@ -31,6 +31,9 @@ router.get('/', async (req: Request, res: Response) => {
         .where(
           and(
             eq(courses.isPublished, true),
+            eq(courses.approvalStatus, 'approved'),
+            isNull(courses.organizationId),
+            isNull(users.organizationId),
             or(
               ilike(courses.title, like),
               ilike(courses.subtitle, like),
@@ -49,7 +52,10 @@ router.get('/', async (req: Request, res: Response) => {
         })
         .from(lessons)
         .innerJoin(courses, eq(lessons.courseId, courses.id))
-        .where(and(eq(courses.isPublished, true), ilike(lessons.title, like)))
+        .where(and(
+          eq(courses.isPublished, true), eq(courses.approvalStatus, 'approved'),
+          isNull(courses.organizationId), ilike(lessons.title, like),
+        ))
         .limit(5),
 
       db
@@ -61,9 +67,14 @@ router.get('/', async (req: Request, res: Response) => {
           createdAt: communityPosts.createdAt,
         })
         .from(communityPosts)
+        .leftJoin(courses, eq(communityPosts.courseId, courses.id))
         .where(
           and(
             eq(communityPosts.isAnonymous, false),
+            or(
+              isNull(communityPosts.courseId),
+              and(isNotNull(courses.id), isNull(courses.organizationId)),
+            ),
             or(ilike(communityPosts.title, like), ilike(communityPosts.content, like))
           )
         )

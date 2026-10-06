@@ -137,7 +137,9 @@ start_service() {
     fi
     rm -f "$pid_file"
   fi
-  clear_project_port "$port" || return 1
+  if [ "$port" != "none" ]; then
+    clear_project_port "$port" || return 1
+  fi
   setsid bash -c 'cd "$1" && exec bash -c "$2"' _ "$directory" "$command" \
     >"$LOGS_DIR/$name.log" 2>&1 </dev/null &
   local pid=$!
@@ -170,12 +172,46 @@ start_dev_dependencies() {
   fi
 }
 
+configure_local_development_database() {
+  local database_url
+  database_url="$(docker compose -f "$ROOT_DIR/docker-compose.yml" --env-file "$ROOT_DIR/.env" config --format json | node -e '
+    let input = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => input += chunk);
+    process.stdin.on("end", () => {
+      const environment = JSON.parse(input).services.postgres.environment;
+      const required = ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB"];
+      if (required.some((key) => !environment[key])) {
+        process.stderr.write("Local Postgres credentials are missing from the development Compose configuration.\\n");
+        process.exitCode = 1;
+        return;
+      }
+      const encode = (value) => encodeURIComponent(String(value));
+      process.stdout.write(`postgresql://${encode(environment.POSTGRES_USER)}:${encode(environment.POSTGRES_PASSWORD)}@127.0.0.1:5432/${encode(environment.POSTGRES_DB)}`);
+    });
+  ')" || {
+    echo "[Nudra] ERROR: Could not read local Postgres settings from docker-compose.yml."
+    return 1
+  }
+  if [[ "$database_url" != postgresql://*@127.0.0.1:5432/* ]]; then
+    echo "[Nudra] ERROR: Development DATABASE_URL did not resolve to the local Postgres container."
+    return 1
+  fi
+
+  # Exporting this value overrides any cloud DATABASE_URL in backend/.env for
+  # child processes, without changing the user's private env file.
+  export DATABASE_URL="$database_url"
+  echo "[Nudra] Using the local development Postgres container."
+  echo "[Nudra] Building the backend and applying local database migrations..."
+  npm --prefix "$BACKEND_DIR" run build
+  npm --prefix "$BACKEND_DIR" run db:migrate
+}
+
 select_node
 command -v curl >/dev/null 2>&1 || { echo "[Nudra] ERROR: curl is required for startup checks."; exit 1; }
 command -v setsid >/dev/null 2>&1 || { echo "[Nudra] ERROR: setsid is required to manage service processes safely."; exit 1; }
 [ -d "$ROOT_DIR/node_modules" ] || { echo "[Nudra] Run npm install from the project root first."; exit 1; }
 [ -d "$BACKEND_DIR/node_modules" ] || { echo "[Nudra] Run npm install from backend/ first."; exit 1; }
-require_env_value DATABASE_URL
 require_env_value SESSION_SECRET
 require_env_value ANON_TOKEN_SALT
 require_env_value WHISPER_API_KEY
@@ -199,11 +235,13 @@ for port in 4981 3001 3000; do
   clear_project_port "$port" || exit 1
 done
 start_dev_dependencies || exit 1
+configure_local_development_database || exit 1
 start_service deepseek "$PROXY_DIR" "$PROXY_DIR/.venv/bin/python -m app.main" 4981 || exit 1
 if ! wait_for_url http://localhost:4981/health deepseek; then
   echo "[Nudra] ERROR: DeepSeek proxy did not start. Check $LOGS_DIR/deepseek.log."
   exit 1
 fi
+start_service video-worker "$BACKEND_DIR" "npm run dev:worker" none || exit 1
 start_service backend "$BACKEND_DIR" "npm run dev" 3001 || exit 1
 if ! wait_for_url http://localhost:3001/api/health backend; then
   "$ROOT_DIR/stop.sh" || true
@@ -222,6 +260,7 @@ fi
 echo ""
 echo "[Nudra] Local app is ready: http://localhost:3000"
 echo "  Backend:  http://localhost:3001 (log: $LOGS_DIR/backend.log)"
+echo "  Worker:   background video jobs (log: $LOGS_DIR/video-worker.log)"
 echo "  Frontend: http://localhost:3000 (log: $LOGS_DIR/frontend.log)"
 echo "  DeepSeek: http://localhost:4981 (log: $LOGS_DIR/deepseek.log)"
 echo "  Stop app and proxy with: ./stop.sh"

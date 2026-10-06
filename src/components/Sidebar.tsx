@@ -10,7 +10,9 @@ import {
   ClipboardList,
   X,
   ExternalLink,
-  GraduationCap
+  GraduationCap,
+  Building2,
+  CalendarDays,
 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import api from '../lib/api';
@@ -26,8 +28,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
   const { user } = useAuth();
   const menuItems = [
     { name: 'Dashboard', path: '/dashboard', icon: LayoutGrid },
-    { name: 'Sanaweya', path: '/sanaweya', icon: GraduationCap },
+    { name: 'Academic', path: '/academic', icon: GraduationCap },
+    ...(user?.role === 'student' && !user.organizationContext ? [{ name: 'Organizations', path: '/organizations', icon: Building2 }] : []),
     { name: 'My Courses', path: '/my-courses', icon: BookOpen },
+    ...(user?.role === 'student' ? [{ name: 'Bookings', path: '/bookings', icon: CalendarDays }] : []),
     { name: 'Browse', path: '/browse', icon: Compass },
     { name: 'Community', path: '/community', icon: Users },
     { name: 'AI Tutor', path: '/ai-tutor', icon: Sparkles, badge: 'New' },
@@ -125,7 +129,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
                             }`}
                           />
                           <span>{item.name}</span>
-                          {item.path === '/sanaweya' && gradeBadge && (
+                          {item.path === '/academic' && gradeBadge && (
                             <span className="bg-[#2D6A4F] text-white text-xs px-1.5 py-0.5 rounded-full ml-1">
                               {gradeBadge}
                             </span>

@@ -1,6 +1,6 @@
 import React from 'react';
 import { Link, NavLink, Outlet } from 'react-router-dom';
-import { BookOpen, Building2, PanelsTopLeft } from 'lucide-react';
+import { BookOpen, Building2, CalendarDays, PanelsTopLeft } from 'lucide-react';
 import { ProfileMenu } from '../components/ProfileMenu';
 import { useAuth } from '../context/AuthContext';
 
@@ -18,6 +18,9 @@ export const OrganizationLayout: React.FC = () => {
           <NavLink end to={`/organization?org=${encodeURIComponent(organization?.slug || '')}`} className={({ isActive }) => `flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-semibold ${isActive ? 'bg-[var(--org-primary)] text-white' : 'text-gray-600 hover:bg-gray-50'}`}>
             <BookOpen size={18} />Courses
           </NavLink>
+          {user?.role === 'student' && organization?.membership?.status === 'active' && <NavLink to={`/bookings?org=${encodeURIComponent(organization.slug)}`} className={({ isActive }) => `flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-semibold ${isActive ? 'bg-[var(--org-primary)] text-white' : 'text-gray-600 hover:bg-gray-50'}`}>
+            <CalendarDays size={18} />Bookings
+          </NavLink>}
           {organization?.membership?.role === 'organization_manager' && <NavLink to={`/organization/manage?org=${encodeURIComponent(organization.slug)}`} className={({ isActive }) => `flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-semibold ${isActive ? 'bg-[var(--org-primary)] text-white' : 'text-gray-600 hover:bg-gray-50'}`}>
             <Building2 size={18} />Manage organization
           </NavLink>}

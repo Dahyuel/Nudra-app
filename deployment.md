@@ -112,7 +112,8 @@ Use an S3-compatible transfer tool from a trusted machine. If source files are i
 
 ## 9. Backups, maintenance, and monitoring
 
-- Schedule daily PostgreSQL custom-format dumps and MinIO object backups/synchronization. Encrypt backups before transferring off the VPS. Retain daily and weekly generations and periodically perform a restore drill.
+- `ops/backup-production-database.sh` creates a private custom-format PostgreSQL dump from the production Compose database, validates the archive and checksum, and prunes local dumps by `NUDRA_BACKUP_RETENTION_DAYS` (default 30). Run it from the deployment directory containing `.env.production`; keep output off the web root and copy both files to encrypted offsite storage. Schedule it daily only after an offsite copy path is configured and tested. This script backs up PostgreSQL only; it does not back up MinIO objects.
+- Back up MinIO video, HLS, thumbnail, and resource objects separately and coordinate object and database snapshots so restored URLs continue to resolve. Retain daily and weekly generations and periodically restore both into a disposable environment.
 - Keep Postgres/Redis/MinIO data in named persistent volumes. Back up the app database and object files together so URLs continue to resolve after restore.
 - Monitor disk (especially video growth), RAM, CPU/transcode queue depth, HTTP error rate, TLS renewal, failed login rates, Postgres connections, Redis memory, MinIO capacity, and provider usage/costs.
 - Apply OS and container image security updates on a planned cadence. Back up before updates; pin/review image versions rather than deploying arbitrary `latest` tags.

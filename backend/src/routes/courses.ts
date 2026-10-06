@@ -12,7 +12,7 @@ import {
   lessonResources,
   orgMemberships,
 } from '../db/schema';
-import { requireAuth, requireRole } from '../middleware/requireAuth';
+import { isUserAllowedInOrganization, requireAuth, requireRole } from '../middleware/requireAuth';
 import { enrollStudent } from '../lib/enrollment';
 
 const router = Router();
@@ -48,18 +48,19 @@ router.get('/', async (req: Request, res: Response) => {
     const limit = Math.max(1, Number(req.query.limit) || 20);
     const offset = (page - 1) * limit;
 
-    if (req.organization) {
-      const userId = await getOptionalUserId(req);
-      if (!userId) return res.status(401).json({ message: 'Sign in to access this organization.' });
-      const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships).where(and(
-        eq(orgMemberships.orgId, req.organization.id), eq(orgMemberships.userId, userId),
-        eq(orgMemberships.status, 'active')
-      )).limit(1);
-      if (!membership) return res.status(403).json({ message: 'Organization membership is required.' });
+    const currentUserId = await getOptionalUserId(req);
+    if (req.organization && !currentUserId) return res.status(401).json({ message: 'Sign in to access this organization.' });
+    if (currentUserId) {
+      const [user] = await db.select({ id: users.id, role: users.role, organizationId: users.organizationId })
+        .from(users).where(eq(users.id, currentUserId)).limit(1);
+      if (!user || !(await isUserAllowedInOrganization(user, req.organization))) {
+        return res.status(403).json({ message: 'This account cannot access this realm.' });
+      }
     }
 
     const conditions = [eq(courses.isPublished, true), eq(courses.approvalStatus, 'approved')];
     conditions.push(req.organization ? eq(courses.organizationId, req.organization.id) : isNull(courses.organizationId));
+    conditions.push(req.organization ? eq(users.organizationId, req.organization.id) : isNull(users.organizationId));
     if (search) conditions.push(ilike(courses.title, `%${search}%`));
     if (category) conditions.push(eq(courses.category, category));
     if (level) conditions.push(eq(courses.level, level));
@@ -155,13 +156,13 @@ router.get('/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const currentUserId = await getOptionalUserId(req);
-    if (req.organization) {
-      if (!currentUserId) return res.status(401).json({ message: 'Sign in to access this organization.' });
-      const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships).where(and(
-        eq(orgMemberships.orgId, req.organization.id), eq(orgMemberships.userId, currentUserId),
-        eq(orgMemberships.status, 'active')
-      )).limit(1);
-      if (!membership) return res.status(403).json({ message: 'Organization membership is required.' });
+    if (req.organization && !currentUserId) return res.status(401).json({ message: 'Sign in to access this organization.' });
+    if (currentUserId) {
+      const [user] = await db.select({ id: users.id, role: users.role, organizationId: users.organizationId })
+        .from(users).where(eq(users.id, currentUserId)).limit(1);
+      if (!user || !(await isUserAllowedInOrganization(user, req.organization))) {
+        return res.status(403).json({ message: 'This account cannot access this realm.' });
+      }
     }
 
     const rows = await db
@@ -172,7 +173,11 @@ router.get('/:id', async (req: Request, res: Response) => {
       })
       .from(courses)
       .innerJoin(users, eq(courses.instructorId, users.id))
-      .where(and(eq(courses.id, id), eq(courses.approvalStatus, 'approved')))
+      .where(and(
+        eq(courses.id, id), eq(courses.approvalStatus, 'approved'),
+        req.organization ? eq(courses.organizationId, req.organization.id) : isNull(courses.organizationId),
+        req.organization ? eq(users.organizationId, req.organization.id) : isNull(users.organizationId),
+      ))
       .limit(1);
 
     if (rows.length === 0) {
@@ -183,10 +188,6 @@ router.get('/:id', async (req: Request, res: Response) => {
     const course = row.course;
 
     if (course.approvalStatus !== 'approved' && currentUserId !== course.instructorId) return res.status(404).json({ message: 'Course not found' });
-
-    if ((req.organization && course.organizationId !== req.organization.id) || (!req.organization && course.organizationId)) {
-      return res.status(404).json({ message: 'Course not found' });
-    }
 
     const isInstructor = currentUserId === course.instructorId;
 
@@ -377,7 +378,9 @@ router.post('/:id/reviews', requireAuth, async (req: Request, res: Response) => 
 
 router.post('/:id/enroll', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
+    const parsedCourseId = z.string().uuid().safeParse(req.params.id);
+    if (!parsedCourseId.success) return res.status(400).json({ message: 'Invalid course id' });
+    const id = parsedCourseId.data;
     const studentId = req.user!.id;
 
     if (!(await courseBelongsToRequestScope(req, studentId, id))) return res.status(404).json({ message: 'Course not found' });

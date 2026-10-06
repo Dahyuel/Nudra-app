@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import multer from 'multer';
 import { z } from 'zod';
 import { randomUUID, randomBytes, createHash } from 'crypto';
-import { eq, and, gt, ne } from 'drizzle-orm';
+import { eq, and, gt, ne, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { users, sessions, instructorApplications, passwordResetTokens, orgMemberships } from '../db/schema';
 import { requireAuth } from '../middleware/requireAuth';
@@ -61,6 +61,45 @@ async function responseUser(req: Request, user: typeof users.$inferSelect) {
       membership: membership ?? null,
     },
   };
+}
+
+async function hasActiveOrganizationManagerMembership(orgId: string, userId: string): Promise<boolean> {
+  const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships).where(and(
+    eq(orgMemberships.orgId, orgId),
+    eq(orgMemberships.userId, userId),
+    eq(orgMemberships.role, 'organization_manager'),
+    eq(orgMemberships.status, 'active'),
+  )).limit(1);
+  return Boolean(membership);
+}
+
+async function isAllowedInRealm(user: typeof users.$inferSelect, req: Request): Promise<boolean> {
+  if (!req.organization) return user.organizationId === null;
+  if (user.organizationId === req.organization.id) {
+    return user.role === 'student' || user.role === 'instructor';
+  }
+  if (user.organizationId !== null) return false;
+  if (user.role === 'admin') return true;
+  return user.role === 'organization_manager' &&
+    await hasActiveOrganizationManagerMembership(req.organization.id, user.id);
+}
+
+async function findRealmUser(email: string, req: Request) {
+  const globalScope = isNull(users.organizationId);
+  if (!req.organization) {
+    const [user] = await db.select().from(users).where(and(eq(users.email, email), globalScope)).limit(1);
+    return user;
+  }
+
+  const [organizationUser] = await db.select().from(users).where(and(
+    eq(users.email, email), eq(users.organizationId, req.organization.id),
+  )).limit(1);
+  if (organizationUser && await isAllowedInRealm(organizationUser, req)) return organizationUser;
+  if (organizationUser) return undefined;
+
+  const [globalUser] = await db.select().from(users).where(and(eq(users.email, email), globalScope)).limit(1);
+  if (globalUser && await isAllowedInRealm(globalUser, req)) return globalUser;
+  return undefined;
 }
 
 async function startSession(res: Response, userId: string) {
@@ -140,29 +179,39 @@ router.post('/register', async (req: Request, res: Response) => {
       });
     }
 
-    const existing = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
+    const existing = await db.select({ id: users.id }).from(users).where(and(
+      eq(users.email, normalizedEmail),
+      req.organization ? eq(users.organizationId, req.organization.id) : isNull(users.organizationId),
+    )).limit(1);
     if (existing.length > 0) {
       return res.status(409).json({ message: 'Email already registered' });
     }
 
     const passwordHash = await bcrypt.hash(password, 12);
 
-    const inserted = await db
-      .insert(users)
-      .values({
-        name: name.trim().slice(0, 255),
-        email: normalizedEmail,
-        passwordHash,
-        role: 'student',
-        grade: grade ? String(grade).trim().slice(0, 255) : null,
-      })
-      .returning();
+    const user = await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(users)
+        .values({
+          name: name.trim().slice(0, 255),
+          email: normalizedEmail,
+          organizationId: req.organization?.id ?? null,
+          passwordHash,
+          role: 'student',
+          grade: grade ? String(grade).trim().slice(0, 255) : null,
+        })
+        .returning();
 
-    const user = inserted[0];
-
-    if (req.organization) {
-      await db.insert(orgMemberships).values({ orgId: req.organization.id, userId: user.id, role: 'student', status: 'pending' });
-    }
+      if (req.organization) {
+        await tx.insert(orgMemberships).values({
+          orgId: req.organization.id,
+          userId: created.id,
+          role: 'student',
+          status: 'pending',
+        });
+      }
+      return created;
+    });
 
     await startSession(res, user.id);
 
@@ -189,6 +238,9 @@ router.post('/register', async (req: Request, res: Response) => {
 // It has no instructor API access until approved (see scripts/instructors.ts).
 router.post('/register-instructor', async (req: Request, res: Response) => {
   try {
+    if (req.organization) {
+      return res.status(403).json({ message: 'Ask your organization manager for an instructor invitation.' });
+    }
     const parsed = instructorApplicationSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
       return res.status(400).json({
@@ -210,7 +262,9 @@ router.post('/register-instructor', async (req: Request, res: Response) => {
       });
     }
 
-    const existing = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
+    const existing = await db.select({ id: users.id }).from(users).where(and(
+      eq(users.email, normalizedEmail), isNull(users.organizationId),
+    )).limit(1);
     if (existing.length > 0) {
       return res.status(409).json({ message: 'Email already registered' });
     }
@@ -296,8 +350,7 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
       return res.status(400).json({ message: 'Please enter a valid email address' });
     }
 
-    const rows = await db.select().from(users).where(eq(users.email, email)).limit(1);
-    const user = rows[0];
+    const user = await findRealmUser(email, req);
     if (user) {
       const token = randomBytes(32).toString('base64url');
       await db.transaction(async (tx) => {
@@ -310,7 +363,7 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
         });
       });
       // Not awaited: response time shouldn't reveal whether an email was sent.
-      sendPasswordResetEmail(user, token).catch(console.warn);
+      sendPasswordResetEmail(user, token, req.organization).catch(console.warn);
     }
 
     return res.json(genericReply);
@@ -334,18 +387,20 @@ router.post('/reset-password', async (req: Request, res: Response) => {
     }
 
     const rows = await db
-      .select()
+      .select({ resetToken: passwordResetTokens, user: users })
       .from(passwordResetTokens)
+      .innerJoin(users, eq(passwordResetTokens.userId, users.id))
       .where(and(eq(passwordResetTokens.tokenHash, hashResetToken(token)), gt(passwordResetTokens.expiresAt, new Date())))
       .limit(1);
-    const resetToken = rows[0];
-    if (!resetToken) {
+    const reset = rows[0];
+    if (!reset || !(await isAllowedInRealm(reset.user, req))) {
       return res.status(400).json({ message: 'This reset link is invalid or has expired.' });
     }
+    const resetToken = reset.resetToken;
 
     const passwordHash = await bcrypt.hash(password, 12);
     await db.transaction(async (tx) => {
-      await tx.update(users).set({ passwordHash, mustChangePassword: false, updatedAt: new Date() }).where(eq(users.id, resetToken.userId));
+      await tx.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, resetToken.userId));
       // One-time link: remove it (and any others), and sign the account out everywhere.
       await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, resetToken.userId));
       await tx.delete(sessions).where(eq(sessions.userId, resetToken.userId));
@@ -368,8 +423,7 @@ router.post('/login', async (req: Request, res: Response) => {
 
     const normalizedEmail = sanitizeEmail(email);
 
-    const rows = await db.select().from(users).where(eq(users.email, normalizedEmail)).limit(1);
-    const user = rows[0];
+    const user = await findRealmUser(normalizedEmail, req);
     // Always perform one password hash comparison so unknown emails and role
     // mismatches take the same expensive path as an incorrect password.
     const valid = await bcrypt.compare(password, user?.passwordHash ?? DUMMY_PASSWORD_HASH);
@@ -430,7 +484,7 @@ router.get('/me', async (req: Request, res: Response) => {
       .where(and(eq(sessions.id, sessionId), gt(sessions.expiresAt, new Date())))
       .limit(1);
 
-    if (rows.length === 0) {
+    if (rows.length === 0 || !(await isAllowedInRealm(rows[0].user, req))) {
       clearSessionCookie(res);
       return res.status(401).json({ message: 'Unauthorized' });
     }

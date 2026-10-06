@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Puck } from '@puckeditor/core';
 import '@puckeditor/core/puck.css';
-import { ExternalLink, LoaderCircle, Maximize2, Minimize2, RotateCcw, Save, Globe } from 'lucide-react';
+import { ExternalLink, History, LoaderCircle, Maximize2, Minimize2, RotateCcw, Save, Globe } from 'lucide-react';
 import api from '../lib/api';
 import { ManagerTabs } from '../components/organization-landing/ManagerTabs';
 import { createLandingConfig, type LandingData, type LandingCourse, type LandingOrganization } from '../components/organization-landing/LandingTemplate';
 
-type EditorResponse = { draft: LandingData; defaultData: LandingData; revision: number; publishedAt: string | null; courses: LandingCourse[] };
+type LandingVersion = { revision: number; actorId: string | null; createdAt: string; published: boolean };
+type EditorResponse = { draft: LandingData; defaultData: LandingData; revision: number; publishedAt: string | null; courses: LandingCourse[]; history: LandingVersion[] };
 // Puck may add editor-only zones/read-only metadata. Persist only our page model.
 function pageData(data: LandingData): LandingData {
   return { root: { props: data.root.props }, content: data.content.map(({ type, props }) => ({ type, props })) } as LandingData;
@@ -18,6 +19,7 @@ export default function OrganizationLandingEditor() {
   const [courses, setCourses] = useState<LandingCourse[]>([]);
   const [revision, setRevision] = useState(0);
   const [publishedAt, setPublishedAt] = useState<string | null>(null);
+  const [history, setHistory] = useState<LandingVersion[]>([]);
   const [dirty, setDirty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -35,6 +37,7 @@ export default function OrganizationLandingEditor() {
       setOrg(current.organization); setDraft(data.draft); latestData.current = data.draft;
       defaultData.current = data.defaultData; savedSnapshot.current = JSON.stringify(pageData(data.draft));
       setCourses(data.courses); setRevision(data.revision); setPublishedAt(data.publishedAt);
+      setHistory(data.history ?? []);
       setDirty(false); setSession((value) => value + 1);
     } catch (err: any) { setError(err?.response?.data?.message || 'The landing page editor could not be loaded.'); }
     finally { setBusy(false); }
@@ -53,10 +56,23 @@ export default function OrganizationLandingEditor() {
     try {
       const response = await api.put('/api/organizations/' + org.id + '/landing-page', { data, expectedRevision: revision, publish });
       setRevision(response.data.revision); setPublishedAt(response.data.publishedAt);
+      setHistory((versions) => [{ revision: response.data.revision, actorId: null, createdAt: new Date().toISOString(), published: publish }, ...versions.filter((version) => version.revision !== response.data.revision)].slice(0, 30));
       savedSnapshot.current = JSON.stringify(data);
       setDirty(JSON.stringify(pageData(latestData.current)) !== savedSnapshot.current);
       setNotice(publish ? 'Published. Visitors now see this version on your organization domain.' : 'Draft saved. Your published page has not changed.');
     } catch (err: any) { setError(err?.response?.data?.message || 'Your page could not be saved.'); }
+    finally { setBusy(false); }
+  };
+  const restoreVersion = async (sourceRevision: number) => {
+    if (!org || busy) return;
+    if (dirty && !window.confirm('Discard your unsaved editor changes and restore this saved version as a draft?')) return;
+    if (!dirty && !window.confirm('Restore this saved version as a draft? The live page will stay unchanged until you publish.')) return;
+    setBusy(true); setError(''); setNotice('');
+    try {
+      await api.post('/api/organizations/' + org.id + '/landing-page/restore', { sourceRevision, expectedRevision: revision, publish: false });
+      await load();
+      setNotice('Version restored as a draft. Publish when you are ready to show it to visitors.');
+    } catch (err: any) { setError(err?.response?.data?.message || 'This version could not be restored.'); }
     finally { setBusy(false); }
   };
   const reset = () => {
@@ -73,6 +89,7 @@ export default function OrganizationLandingEditor() {
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-gray-100 bg-white p-4">
       <div><p className="text-sm font-semibold">{org.name}</p><p className="mt-1 text-xs text-gray-500">{dirty ? 'Unsaved changes' : revision === 0 ? 'Default template' : 'Draft is saved'} · {publishedAt ? 'Last published ' + new Date(publishedAt).toLocaleString('en') : 'Visitors currently see the default template'}</p></div>
       <div className="flex flex-wrap gap-2">
+        {history.length > 0 && <details className="relative"><summary className="inline-flex cursor-pointer list-none items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm"><History size={15} />History</summary><div className="absolute right-0 z-30 mt-2 max-h-80 w-80 overflow-auto rounded-xl border border-gray-200 bg-white p-2 shadow-xl">{history.map((version) => <div key={version.revision} className="flex items-center justify-between gap-3 border-b border-gray-100 p-3 last:border-0"><div><p className="text-sm font-semibold">Revision {version.revision}{version.published ? ' · published' : ''}</p><p className="mt-1 text-xs text-gray-500">{new Date(version.createdAt).toLocaleString('en')}</p></div><button type="button" disabled={busy || version.revision === revision} onClick={() => void restoreVersion(version.revision)} className="shrink-0 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-semibold disabled:opacity-40">Restore draft</button></div>)}</div></details>}
         <button type="button" disabled={busy} onClick={reset} className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm disabled:opacity-50"><RotateCcw size={15} />Reset template</button>
         <a href={liveUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-2 rounded-lg border border-gray-200 px-3 py-2 text-sm"><ExternalLink size={15} />View live</a>
         <button type="button" onClick={() => setFullScreen(!fullScreen)} className="rounded-lg border border-gray-200 p-2" aria-label={fullScreen ? 'Exit full screen' : 'Open full screen'}>{fullScreen ? <Minimize2 size={18} /> : <Maximize2 size={18} />}</button>

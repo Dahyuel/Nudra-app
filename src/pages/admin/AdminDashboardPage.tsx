@@ -80,7 +80,60 @@ interface Application {
   reviewedAt: string | null;
 }
 
-type Tab = 'overview' | 'courses' | 'applications' | 'account';
+type Tab = 'overview' | 'courses' | 'catalog' | 'applications' | 'account';
+
+type CatalogTrack = 'general' | 'school' | 'university';
+type CatalogKind =
+  | 'general_field' | 'specialization' | 'curriculum' | 'stage' | 'qualification'
+  | 'grade' | 'subject' | 'syllabus_version' | 'university' | 'faculty' | 'program' | 'module';
+
+interface CatalogItem {
+  id: string;
+  track: CatalogTrack;
+  kind: CatalogKind;
+  parentId: string | null;
+  slug: string;
+  nameEn: string;
+  nameAr: string | null;
+  description: string | null;
+  displayOrder: number;
+  isVisible: boolean;
+  provenance: string;
+  metadata: Record<string, unknown>;
+  archivedAt: string | null;
+}
+
+interface CatalogCourse {
+  id: string;
+  title: string;
+  titleAr: string | null;
+  category: string;
+  level: string;
+  isPublished: boolean;
+  sanaweyaGrade: string | null;
+  sanaweyaSubject: string | null;
+}
+
+const catalogKinds: Record<CatalogTrack, { kind: CatalogKind; label: string; parent: CatalogKind | null }[]> = {
+  general: [
+    { kind: 'general_field', label: 'Field', parent: null },
+    { kind: 'specialization', label: 'Specialization', parent: 'general_field' },
+  ],
+  school: [
+    { kind: 'curriculum', label: 'Curriculum', parent: null },
+    { kind: 'stage', label: 'Stage', parent: 'curriculum' },
+    { kind: 'qualification', label: 'Qualification', parent: 'stage' },
+    { kind: 'grade', label: 'Grade', parent: 'qualification' },
+    { kind: 'subject', label: 'Subject', parent: 'grade' },
+    { kind: 'syllabus_version', label: 'Syllabus version', parent: 'subject' },
+  ],
+  university: [
+    { kind: 'university', label: 'University', parent: null },
+    { kind: 'faculty', label: 'Faculty', parent: 'university' },
+    { kind: 'program', label: 'Program', parent: 'faculty' },
+    { kind: 'module', label: 'Module', parent: 'program' },
+  ],
+};
 
 // ---------- Helpers ----------
 
@@ -366,6 +419,206 @@ const CoursesTab: React.FC = () => {
         "Revenue" is the total of paid orders. While payments run in test mode, it includes test and demo
         payments, not real money.
       </p>
+    </div>
+  );
+};
+
+// ---------- Academic catalog ----------
+
+const CatalogTab: React.FC = () => {
+  const queryClient = useQueryClient();
+  const [track, setTrack] = useState<CatalogTrack>('general');
+  const [editing, setEditing] = useState<CatalogItem | null>(null);
+  const [formOpen, setFormOpen] = useState(false);
+  const [formError, setFormError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [importText, setImportText] = useState('');
+  const [showImport, setShowImport] = useState(false);
+  const [selectedCourseId, setSelectedCourseId] = useState('');
+  const [selectedLeafId, setSelectedLeafId] = useState('');
+  const [courseItemIds, setCourseItemIds] = useState<string[]>([]);
+  const [courseMessage, setCourseMessage] = useState('');
+  const [form, setForm] = useState({
+    track: 'general' as CatalogTrack, kind: 'general_field' as CatalogKind, parentId: '', slug: '',
+    nameEn: '', nameAr: '', description: '', displayOrder: '0', isVisible: true, provenance: 'admin', metadata: '{}',
+  });
+  const itemsQuery = useQuery({
+    queryKey: ['admin-catalog-items'],
+    queryFn: async () => ((await api.get('/api/admin/catalog/items')).data.items ?? []) as CatalogItem[],
+  });
+  const coursesQuery = useQuery({
+    queryKey: ['admin-catalog-courses'],
+    queryFn: async () => ((await api.get('/api/admin/catalog/courses')).data.courses ?? []) as CatalogCourse[],
+  });
+  const allItems = (itemsQuery.data ?? []).filter((item) => !item.archivedAt);
+  const items = allItems.filter((item) => item.track === track);
+  const treeOptions = useMemo(() => {
+    const byParent = new Map<string | null, CatalogItem[]>();
+    for (const item of items) byParent.set(item.parentId, [...(byParent.get(item.parentId) ?? []), item]);
+    const ordered: { item: CatalogItem; depth: number }[] = [];
+    const walk = (parentId: string | null, depth: number) => {
+      for (const item of (byParent.get(parentId) ?? []).sort((a, b) => a.displayOrder - b.displayOrder || a.nameEn.localeCompare(b.nameEn))) {
+        ordered.push({ item, depth });
+        walk(item.id, depth + 1);
+      }
+    };
+    walk(null, 0);
+    return ordered;
+  }, [items]);
+  const selectedCourse = (coursesQuery.data ?? []).find((course) => course.id === selectedCourseId);
+  const associationQuery = useQuery({
+    queryKey: ['admin-course-catalog-items', selectedCourseId],
+    enabled: Boolean(selectedCourseId),
+    queryFn: async () => (await api.get(`/api/admin/catalog/courses/${selectedCourseId}`)).data as { courseId: string; catalogItemIds: string[] },
+  });
+  React.useEffect(() => {
+    setCourseItemIds(associationQuery.data?.catalogItemIds ?? []);
+    setSelectedLeafId('');
+  }, [associationQuery.data]);
+
+  const resetForm = (nextTrack: CatalogTrack = track, item?: CatalogItem) => {
+    const kind = item?.kind ?? catalogKinds[nextTrack][0].kind;
+    setEditing(item ?? null);
+    setForm({
+      track: item?.track ?? nextTrack, kind, parentId: item?.parentId ?? '', slug: item?.slug ?? '',
+      nameEn: item?.nameEn ?? '', nameAr: item?.nameAr ?? '', description: item?.description ?? '',
+      displayOrder: String(item?.displayOrder ?? 0), isVisible: item?.isVisible ?? true,
+      provenance: item?.provenance ?? 'admin', metadata: JSON.stringify(item?.metadata ?? {}, null, 2),
+    });
+    setFormError('');
+    setFormOpen(true);
+  };
+  const refreshItems = () => queryClient.invalidateQueries({ queryKey: ['admin-catalog-items'] });
+  const saveItem = useMutation({
+    mutationFn: async () => {
+      let metadata: Record<string, unknown>;
+      try {
+        metadata = JSON.parse(form.metadata || '{}');
+        if (!metadata || Array.isArray(metadata) || typeof metadata !== 'object') throw new Error();
+      } catch {
+        throw new Error('Metadata must be a valid JSON object.');
+      }
+      const selectedKind = catalogKinds[form.track].find((entry) => entry.kind === form.kind);
+      if (!selectedKind) throw new Error('Choose a valid kind for this track.');
+      if (selectedKind.parent && !form.parentId) throw new Error('Choose a parent for this item.');
+      if (!selectedKind.parent && form.parentId) throw new Error('Root items cannot have a parent.');
+      const payload = {
+        track: form.track, kind: form.kind, parentId: form.parentId || null, slug: form.slug.trim(),
+        nameEn: form.nameEn.trim(), nameAr: form.nameAr.trim() || null,
+        description: form.description.trim() || null, displayOrder: Number(form.displayOrder),
+        isVisible: form.isVisible, provenance: form.provenance.trim() || 'admin', metadata,
+      };
+      if (!payload.slug || !payload.nameEn || !Number.isInteger(payload.displayOrder) || payload.displayOrder < 0) {
+        throw new Error('Enter a slug, English name, and a non-negative whole-number display order.');
+      }
+      if (editing) return (await api.patch(`/api/admin/catalog/items/${editing.id}`, payload)).data.item as CatalogItem;
+      return (await api.post('/api/admin/catalog/items', payload)).data.item as CatalogItem;
+    },
+    onSuccess: () => {
+      setFormOpen(false);
+      setNotice(editing ? 'Catalog item updated.' : 'Catalog item created.');
+      refreshItems();
+    },
+    onError: (error) => setFormError(errorMessage(error, (error as Error).message || 'Could not save catalog item.')),
+  });
+  const archiveItem = useMutation({
+    mutationFn: async (item: CatalogItem) => (await api.delete(`/api/admin/catalog/items/${item.id}`)).data as { archived: number },
+    onSuccess: (result) => {
+      setNotice(`Archived ${result.archived} catalog item${result.archived === 1 ? '' : 's'}, including descendants.`);
+      refreshItems();
+    },
+    onError: (error) => setNotice(errorMessage(error, 'Could not archive catalog item.')),
+  });
+  const importCatalog = useMutation({
+    mutationFn: async () => {
+      let parsed: unknown;
+      try { parsed = JSON.parse(importText); } catch { throw new Error('Enter valid JSON.'); }
+      if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { items?: unknown }).items)) {
+        throw new Error('Import JSON must have an items array.');
+      }
+      return (await api.post('/api/admin/catalog/import', parsed)).data as { imported: number };
+    },
+    onSuccess: (result) => {
+      setNotice(`Imported ${result.imported} catalog item${result.imported === 1 ? '' : 's'}.`);
+      setShowImport(false);
+      refreshItems();
+    },
+    onError: (error) => setNotice(errorMessage(error, (error as Error).message || 'Could not import catalog.')),
+  });
+  const saveCourseClassification = useMutation({
+    mutationFn: async () => (await api.put(`/api/admin/catalog/courses/${selectedCourseId}`, { catalogItemIds: courseItemIds })).data as { catalogItemIds: string[] },
+    onSuccess: (result) => {
+      setCourseItemIds(result.catalogItemIds);
+      setCourseMessage('Course classification saved.');
+      queryClient.invalidateQueries({ queryKey: ['admin-course-catalog-items', selectedCourseId] });
+    },
+    onError: (error) => setCourseMessage(errorMessage(error, 'Could not save course classification.')),
+  });
+  const leafPath = useMemo(() => {
+    const path: CatalogItem[] = [];
+    let cursor = items.find((item) => item.id === selectedLeafId);
+    while (cursor) {
+      path.unshift(cursor);
+      cursor = cursor.parentId ? allItems.find((item) => item.id === cursor?.parentId) : undefined;
+    }
+    return path;
+  }, [allItems, items, selectedLeafId]);
+  const kindEntry = catalogKinds[form.track].find((entry) => entry.kind === form.kind);
+  const parentOptions = items.filter((item) => item.track === form.track && item.kind === kindEntry?.parent && item.id !== editing?.id);
+
+  return (
+    <div className="space-y-6">
+      <div className={`${card} p-5 flex flex-col md:flex-row md:items-center md:justify-between gap-4`}>
+        <div>
+          <h2 className="font-bold text-lg text-[#1B1B1B]">Academic catalog</h2>
+          <p className="text-sm text-gray-500 mt-1">Manage general courses, school tracks, university hierarchies, and global course classifications.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button onClick={() => setShowImport((value) => !value)} className="px-4 py-2 rounded-xl border border-gray-200 text-sm font-bold text-gray-700 hover:bg-gray-50">Import JSON</button>
+          <button onClick={() => resetForm()} className="px-4 py-2 rounded-xl bg-[#2D6A4F] text-white text-sm font-bold hover:bg-[#23533e]">Add catalog item</button>
+        </div>
+      </div>
+      {notice && <p role="status" className="text-sm font-semibold text-[#2D6A4F]">{notice}</p>}
+
+      {showImport && <div className={`${card} p-5 space-y-3`}>
+        <div><h3 className="font-bold text-[#1B1B1B]">Batch import</h3><p className="text-xs text-gray-500 mt-1">Provide <code>{'{ "items": [...] }'}</code>. List parents before children, or use parentSlug. Up to 1,000 items.</p></div>
+        <textarea rows={8} value={importText} onChange={(event) => setImportText(event.target.value)} placeholder={'{\n  "items": [\n    {"track":"university","kind":"university","slug":"example","nameEn":"Example University"}\n  ]\n}'} className="w-full font-mono text-xs p-3 rounded-xl border border-gray-200 focus:outline-none focus:border-[#2D6A4F]" />
+        <div className="flex items-center gap-3"><button disabled={importCatalog.isPending} onClick={() => importCatalog.mutate()} className="px-4 py-2 rounded-xl bg-[#2D6A4F] text-white text-sm font-bold disabled:opacity-60">{importCatalog.isPending ? 'Importing…' : 'Import items'}</button><button onClick={() => setShowImport(false)} className="px-4 py-2 rounded-xl border border-gray-200 text-sm font-bold">Cancel</button></div>
+      </div>}
+
+      {formOpen && <form onSubmit={(event) => { event.preventDefault(); setFormError(''); saveItem.mutate(); }} className={`${card} p-5 space-y-4`}>
+        <div className="flex items-center justify-between"><h3 className="font-bold text-[#1B1B1B]">{editing ? 'Edit catalog item' : 'New catalog item'}</h3><button type="button" onClick={() => setFormOpen(false)} className="text-sm text-gray-500">Close</button></div>
+        <div className="grid md:grid-cols-2 gap-3">
+          <label className="text-xs font-bold text-gray-600">Track<select disabled={Boolean(editing)} value={form.track} onChange={(event) => { const next = event.target.value as CatalogTrack; setForm((old) => ({ ...old, track: next, kind: catalogKinds[next][0].kind, parentId: '' })); }} className="mt-1 w-full px-3 py-2.5 border rounded-xl bg-white disabled:bg-gray-50"><option value="general">General</option><option value="school">School</option><option value="university">University</option></select></label>
+          <label className="text-xs font-bold text-gray-600">Kind<select disabled={Boolean(editing)} value={form.kind} onChange={(event) => setForm((old) => ({ ...old, kind: event.target.value as CatalogKind, parentId: '' }))} className="mt-1 w-full px-3 py-2.5 border rounded-xl bg-white disabled:bg-gray-50">{catalogKinds[form.track].map((entry) => <option key={entry.kind} value={entry.kind}>{entry.label}</option>)}</select></label>
+          <label className="text-xs font-bold text-gray-600">Parent{kindEntry?.parent ? ` (${kindEntry.parent.replaceAll('_', ' ')})` : ' (root)'}<select disabled={!kindEntry?.parent} required={Boolean(kindEntry?.parent)} value={form.parentId} onChange={(event) => setForm((old) => ({ ...old, parentId: event.target.value }))} className="mt-1 w-full px-3 py-2.5 border rounded-xl bg-white disabled:bg-gray-50"><option value="">{kindEntry?.parent ? 'Choose parent' : 'No parent'}</option>{parentOptions.map((item) => <option key={item.id} value={item.id}>{item.nameEn}</option>)}</select></label>
+          <label className="text-xs font-bold text-gray-600">Slug<input required pattern="[a-z0-9]+(?:-[a-z0-9]+)*" maxLength={160} value={form.slug} onChange={(event) => setForm((old) => ({ ...old, slug: event.target.value }))} className="mt-1 w-full px-3 py-2.5 border rounded-xl" /></label>
+          <label className="text-xs font-bold text-gray-600">English name<input required maxLength={255} value={form.nameEn} onChange={(event) => setForm((old) => ({ ...old, nameEn: event.target.value }))} className="mt-1 w-full px-3 py-2.5 border rounded-xl" /></label>
+          <label className="text-xs font-bold text-gray-600">Arabic name<input maxLength={255} value={form.nameAr} onChange={(event) => setForm((old) => ({ ...old, nameAr: event.target.value }))} className="mt-1 w-full px-3 py-2.5 border rounded-xl" /></label>
+          <label className="text-xs font-bold text-gray-600">Display order<input type="number" min={0} max={100000} step={1} value={form.displayOrder} onChange={(event) => setForm((old) => ({ ...old, displayOrder: event.target.value }))} className="mt-1 w-full px-3 py-2.5 border rounded-xl" /></label>
+          <label className="text-xs font-bold text-gray-600">Provenance<input maxLength={80} value={form.provenance} onChange={(event) => setForm((old) => ({ ...old, provenance: event.target.value }))} className="mt-1 w-full px-3 py-2.5 border rounded-xl" /></label>
+        </div>
+        <label className="block text-xs font-bold text-gray-600">Description<textarea rows={3} maxLength={10000} value={form.description} onChange={(event) => setForm((old) => ({ ...old, description: event.target.value }))} className="mt-1 w-full px-3 py-2.5 border rounded-xl" /></label>
+        <label className="block text-xs font-bold text-gray-600">Metadata (JSON object)<textarea rows={3} value={form.metadata} onChange={(event) => setForm((old) => ({ ...old, metadata: event.target.value }))} className="mt-1 w-full font-mono text-xs px-3 py-2.5 border rounded-xl" /></label>
+        <label className="inline-flex items-center gap-2 text-sm text-gray-700"><input type="checkbox" checked={form.isVisible} onChange={(event) => setForm((old) => ({ ...old, isVisible: event.target.checked }))} />Visible to learners</label>
+        {formError && <p role="alert" className="text-sm text-red-600">{formError}</p>}
+        <button disabled={saveItem.isPending} className="px-5 py-2.5 rounded-xl bg-[#2D6A4F] text-white text-sm font-bold disabled:opacity-60">{saveItem.isPending ? 'Saving…' : 'Save item'}</button>
+      </form>}
+
+      <section className={`${card} p-5 space-y-4`}>
+        <div className="flex flex-wrap items-center justify-between gap-3"><div><h3 className="font-bold text-[#1B1B1B]">Catalog structure</h3><p className="text-xs text-gray-500">Archived nodes are hidden from the active hierarchy.</p></div><select value={track} onChange={(event) => setTrack(event.target.value as CatalogTrack)} className="px-3 py-2 border border-gray-200 rounded-xl bg-white text-sm"><option value="general">General</option><option value="school">School</option><option value="university">University</option></select></div>
+        {itemsQuery.error ? <ErrorBox message={errorMessage(itemsQuery.error, 'Could not load catalog items.')} onRetry={() => itemsQuery.refetch()} /> : itemsQuery.isLoading ? <p className="text-sm text-gray-500">Loading catalog…</p> : treeOptions.length === 0 ? <p className="text-sm text-gray-500 py-6 text-center">No items in this track yet.</p> : <div className="divide-y divide-gray-100">{treeOptions.map(({ item, depth }) => <div key={item.id} className="py-3 flex items-center gap-3" style={{ paddingLeft: `${Math.min(depth, 6) * 20}px` }}><div className="min-w-0 flex-1"><p className="font-semibold text-sm text-gray-800">{item.nameEn}{item.nameAr ? <span className="text-gray-400 font-normal"> · {item.nameAr}</span> : null}</p><p className="text-[11px] text-gray-500">{item.kind.replaceAll('_', ' ')} · {item.slug}{item.isVisible ? '' : ' · hidden'}</p></div><button onClick={() => resetForm(track, item)} className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-bold">Edit</button><button onClick={() => { if (window.confirm(`Archive “${item.nameEn}” and all its descendants?`)) archiveItem.mutate(item); }} disabled={archiveItem.isPending} className="px-3 py-1.5 rounded-lg border border-red-100 text-red-600 text-xs font-bold">Archive</button></div>)}</div>}
+      </section>
+
+      <section className={`${card} p-5 space-y-4`}>
+        <div><h3 className="font-bold text-[#1B1B1B]">Classify a global course</h3><p className="text-xs text-gray-500 mt-1">Choose one path through a single catalog track, then select the path levels to associate with the course.</p></div>
+        {coursesQuery.error ? <ErrorBox message={errorMessage(coursesQuery.error, 'Could not load courses.')} onRetry={() => coursesQuery.refetch()} /> : <div className="grid md:grid-cols-2 gap-3">
+          <label className="text-xs font-bold text-gray-600">Global course<select value={selectedCourseId} onChange={(event) => { setSelectedCourseId(event.target.value); setCourseMessage(''); }} className="mt-1 w-full px-3 py-2.5 border border-gray-200 rounded-xl bg-white"><option value="">Select course</option>{(coursesQuery.data ?? []).map((course) => <option key={course.id} value={course.id}>{course.title}{course.isPublished ? '' : ' · Draft'}</option>)}</select></label>
+          <label className="text-xs font-bold text-gray-600">Catalog leaf<select value={selectedLeafId} onChange={(event) => { setSelectedLeafId(event.target.value); setCourseItemIds([]); setCourseMessage(''); }} disabled={!selectedCourseId || associationQuery.isLoading} className="mt-1 w-full px-3 py-2.5 border border-gray-200 rounded-xl bg-white disabled:bg-gray-50"><option value="">Choose a node</option>{treeOptions.map(({ item, depth }) => <option key={item.id} value={item.id}>{'— '.repeat(depth)}{item.nameEn} ({item.kind.replaceAll('_', ' ')})</option>)}</select></label>
+        </div>}
+        {selectedCourse && associationQuery.isError && <ErrorBox message={errorMessage(associationQuery.error, 'Could not load existing course classifications.')} onRetry={() => associationQuery.refetch()} />}
+        {selectedCourse && selectedLeafId && <div className="space-y-2"><p className="text-xs font-bold text-gray-600">Select classification levels along this path:</p><div className="flex flex-wrap gap-2">{leafPath.map((item) => <label key={item.id} className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-gray-50 border border-gray-200 text-xs"><input type="checkbox" checked={courseItemIds.includes(item.id)} onChange={(event) => setCourseItemIds((ids) => event.target.checked ? [...ids, item.id] : ids.filter((id) => id !== item.id))} />{item.nameEn}</label>)}</div><div className="flex items-center gap-3"><button disabled={saveCourseClassification.isPending || associationQuery.isLoading} onClick={() => saveCourseClassification.mutate()} className="px-4 py-2 rounded-xl bg-[#2D6A4F] text-white text-sm font-bold disabled:opacity-60">{saveCourseClassification.isPending ? 'Saving…' : 'Save classification'}</button>{courseMessage && <p role="status" className="text-xs text-gray-600">{courseMessage}</p>}</div></div>}
+      </section>
     </div>
   );
 };
@@ -677,7 +930,7 @@ export const AdminDashboardPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get('tab');
   const tab: Tab =
-    tabParam === 'courses' || tabParam === 'applications' || tabParam === 'account' ? tabParam : 'overview';
+    tabParam === 'courses' || tabParam === 'catalog' || tabParam === 'applications' || tabParam === 'account' ? tabParam : 'overview';
   const setTab = (t: Tab) => setSearchParams(t === 'overview' ? {} : { tab: t }, { replace: true });
 
   // Shares the overview cache, so the pending badge costs no extra request.
@@ -690,6 +943,7 @@ export const AdminDashboardPage: React.FC = () => {
   const tabs: { id: Tab; label: string }[] = [
     { id: 'overview', label: 'Overview' },
     { id: 'courses', label: 'Courses' },
+    { id: 'catalog', label: 'Academic catalog' },
     { id: 'applications', label: 'Instructor applications' },
     { id: 'account', label: 'Account' },
   ];
@@ -740,6 +994,7 @@ export const AdminDashboardPage: React.FC = () => {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
         {tab === 'overview' && <OverviewTab onOpenApplications={() => setTab('applications')} />}
         {tab === 'courses' && <CoursesTab />}
+        {tab === 'catalog' && <CatalogTab />}
         {tab === 'applications' && <ApplicationsTab />}
         {tab === 'account' && <AccountTab />}
       </main>

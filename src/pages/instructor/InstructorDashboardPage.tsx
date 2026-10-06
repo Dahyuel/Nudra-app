@@ -37,7 +37,85 @@ interface CommunityQuestion {
   replyCount: number;
 }
 
-export const InstructorDashboardPage: React.FC = () => {
+const OrganizationInstructorDashboardPage: React.FC = () => {
+  const { user } = useAuth();
+  const { courses, isLoading, error } = useInstructorCourses();
+  const organization = user?.organizationContext;
+  const orgQuery = organization ? `?org=${encodeURIComponent(organization.slug)}` : '';
+  const pendingCourses = courses.filter((course) => course.approvalStatus === 'pending');
+  const rejectedCourses = courses.filter((course) => course.approvalStatus === 'rejected');
+  const publishedCourses = courses.filter((course) => course.isPublished && course.approvalStatus === 'approved');
+
+  return (
+    <div className="mx-auto max-w-6xl space-y-7">
+      <header className="rounded-3xl bg-white p-6 shadow-sm sm:p-8" style={{ borderTop: `4px solid ${organization?.primaryColor || '#2D6A4F'}` }}>
+        <p className="text-sm font-semibold text-gray-500">{organization?.name || 'Organization'} · Instructor workspace</p>
+        <div className="mt-2 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+          <div>
+            <h1 className="text-3xl font-extrabold tracking-tight text-gray-900">Welcome, {user?.name?.split(' ')[0] || 'Instructor'}</h1>
+            <p className="mt-2 max-w-2xl text-sm text-gray-600">Manage courses for this organization and track whether they are awaiting manager approval or published for learners.</p>
+          </div>
+          <Link to={`/instructor/upload${orgQuery}`} className="inline-flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-sm font-bold text-white" style={{ backgroundColor: organization?.primaryColor || '#2D6A4F' }}>
+            <Upload size={17} /> Create course
+          </Link>
+        </div>
+      </header>
+
+      {error && <PageErrorBanner errors={[error]} />}
+
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="Organization course summary">
+        {[
+          { label: 'Your courses', value: isLoading ? '—' : courses.length },
+          { label: 'Awaiting manager review', value: isLoading ? '—' : pendingCourses.length },
+          { label: 'Published for students', value: isLoading ? '—' : publishedCourses.length },
+          { label: 'Needs changes', value: isLoading ? '—' : rejectedCourses.length },
+        ].map((stat) => <div key={stat.label} className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm">
+          <p className="text-sm font-medium text-gray-500">{stat.label}</p>
+          <p className="mt-2 text-3xl font-extrabold text-gray-900">{stat.value}</p>
+        </div>)}
+      </section>
+
+      {(pendingCourses.length > 0 || rejectedCourses.length > 0) && !isLoading && <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5" aria-live="polite">
+        <h2 className="font-bold text-amber-950">Course review updates</h2>
+        <div className="mt-3 space-y-2 text-sm text-amber-900">
+          {pendingCourses.map((course) => <p key={course.id}><strong>{course.title}</strong> is waiting for the organization manager’s decision.</p>)}
+          {rejectedCourses.map((course) => <p key={course.id}><strong>{course.title}</strong> was declined. Open the course editor to revise and resubmit it.</p>)}
+        </div>
+      </section>}
+
+      <section className="rounded-2xl border border-gray-100 bg-white p-5 shadow-sm sm:p-6">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 pb-4">
+          <div><h2 className="text-lg font-bold text-gray-900">Your organization courses</h2><p className="mt-1 text-sm text-gray-500">Only courses assigned to your account in this organization are shown.</p></div>
+          <Link to={`/instructor/courses${orgQuery}`} className="text-sm font-bold text-emerald-800 hover:underline">Manage courses</Link>
+        </div>
+        {isLoading ? <p className="py-8 text-center text-sm text-gray-500">Loading your courses…</p> : error ? <p className="py-8 text-center text-sm text-red-700">Could not load organization courses. Please retry from My Courses.</p> : courses.length === 0 ? <div className="py-10 text-center">
+          <BookOpen className="mx-auto text-gray-300" size={32} />
+          <p className="mt-3 font-semibold text-gray-800">No courses assigned yet</p>
+          <p className="mt-1 text-sm text-gray-500">Create a course for your manager to review, or ask the manager to assign one to you.</p>
+          <Link to={`/instructor/upload${orgQuery}`} className="mt-4 inline-flex rounded-xl bg-emerald-800 px-4 py-2.5 text-sm font-bold text-white">Create your first course</Link>
+        </div> : <div className="divide-y divide-gray-100">
+          {courses.map((course) => {
+            const status = course.approvalStatus === 'pending' ? 'Waiting for manager approval' : course.approvalStatus === 'rejected' ? 'Declined · revise and resubmit' : course.isPublished ? 'Published' : 'Approved · unpublished';
+            const tone = course.approvalStatus === 'pending' ? 'bg-blue-50 text-blue-800' : course.approvalStatus === 'rejected' ? 'bg-red-50 text-red-800' : course.isPublished ? 'bg-emerald-50 text-emerald-800' : 'bg-gray-100 text-gray-700';
+            return <div key={course.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2"><h3 className="truncate font-bold text-gray-900">{course.title}</h3><span className="rounded-full bg-gray-100 px-2.5 py-1 text-xs capitalize text-gray-600">{course.deliveryMode === 'offline' ? 'Offline booking' : 'Online'}</span><span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${tone}`}>{status}</span></div>
+                <p className="mt-1 text-xs text-gray-500">{course.category} · {course.level} · Updated {new Date(course.updatedAt).toLocaleDateString()}</p>
+              </div>
+              <Link to={`/instructor/upload?org=${encodeURIComponent(organization?.slug || '')}&edit=${encodeURIComponent(course.id)}`} className="shrink-0 rounded-lg border border-gray-200 px-3 py-2 text-center text-sm font-semibold text-gray-700 hover:bg-gray-50">Open course</Link>
+            </div>;
+          })}
+        </div>}
+      </section>
+
+      <div className="flex flex-wrap gap-3">
+        <Link to={`/organization${orgQuery}`} className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm font-semibold text-gray-700 hover:bg-gray-50">Open organization student view</Link>
+      </div>
+    </div>
+  );
+};
+
+const GlobalInstructorDashboardPage: React.FC = () => {
   const { courses, isLoading, error: coursesError } = useInstructorCourses();
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -405,4 +483,11 @@ export const InstructorDashboardPage: React.FC = () => {
       </div>
     </div>
   );
+};
+
+export const InstructorDashboardPage: React.FC = () => {
+  const { user } = useAuth();
+  return user?.organizationContext?.membership?.role === 'instructor'
+    ? <OrganizationInstructorDashboardPage />
+    : <GlobalInstructorDashboardPage />;
 };

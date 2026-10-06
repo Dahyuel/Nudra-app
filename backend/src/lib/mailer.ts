@@ -6,6 +6,7 @@ const FROM: string = process.env.SMTP_FROM || 'Nudra Support <support@nudra.org>
 const INSTRUCTOR_FROM: string = process.env.INSTRUCTOR_INVITE_FROM || 'Nudra <no-reply@nudra.org>';
 // The Vite dev server runs on port 3000 (see package.json); 5173 linked to nothing.
 const FRONTEND_URL: string = process.env.FRONTEND_URL || 'http://localhost:3000';
+const BASE_DOMAIN: string = process.env.BASE_DOMAIN || process.env.NUDRA_BASE_DOMAIN || 'nudra.org';
 const LOGO_URL: string = process.env.MAIL_LOGO_URL || `${FRONTEND_URL}/nudra-text-logo.png`;
 
 // Names and titles are user-provided; escape them before putting them in email HTML.
@@ -101,8 +102,10 @@ export async function sendOrganizationInstructorInviteEmail(input: {
   membershipId: string;
   setupToken?: string;
 }): Promise<void> {
-  const link = `${FRONTEND_URL}/organization?org=${encodeURIComponent(input.organizationSlug)}&invite=${encodeURIComponent(input.membershipId)}`;
-  const setupLink = input.setupToken ? `${FRONTEND_URL}/reset-password?token=${encodeURIComponent(input.setupToken)}&setup=1` : null;
+  const link = organizationScopedUrl('/organization', input.organizationSlug, { invite: input.membershipId });
+  const setupLink = input.setupToken
+    ? organizationScopedUrl('/reset-password', input.organizationSlug, { token: input.setupToken, setup: '1' })
+    : null;
   const html = wrapper(
     `<h2 style="margin:0 0 12px;color:#1B1B1B;font-size:20px;">You’re invited to teach on Nudra</h2>` +
       `<p style="margin:0 0 8px;color:#4B5563;font-size:14px;line-height:1.8;">Hi ${esc(input.name)}, ${esc(input.organizationName)} invited your instructor account to join its learning space.</p>` +
@@ -125,8 +128,69 @@ export async function sendOrganizationInstructorInviteEmail(input: {
   }
 }
 
-export async function sendPasswordResetEmail(user: { name: string; email: string }, token: string): Promise<void> {
-  const link = `${FRONTEND_URL}/reset-password?token=${encodeURIComponent(token)}`;
+type OrganizationResetContext = {
+  slug: string;
+  customDomain?: string | null;
+  customDomainStatus?: string | null;
+  customDomainVerifiedAt?: Date | string | null;
+};
+
+function organizationScopedUrl(path: string, slug: string, values: Record<string, string> = {}): string {
+  const query = new URLSearchParams({ ...values, org: slug });
+  if (process.env.NODE_ENV === 'production') {
+    const baseDomain = BASE_DOMAIN.trim().toLowerCase();
+    if (/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(baseDomain) && !baseDomain.includes('..')) {
+      const url = new URL(`https://${slug}.${baseDomain}${path}`);
+      url.search = query.toString();
+      return url.toString();
+    }
+  }
+
+  const url = new URL(path, FRONTEND_URL);
+  url.search = query.toString();
+  return url.toString();
+}
+
+function organizationResetLink(token: string, organization: OrganizationResetContext): string {
+  const query = new URLSearchParams({ token });
+  const customDomain = organization.customDomain?.trim().toLowerCase();
+  if (customDomain && organization.customDomainStatus === 'active' && organization.customDomainVerifiedAt) {
+    // The domain comes from the database's active verified-domain record. Still
+    // validate its shape so corrupted data cannot inject a URL or path.
+    const safeHostname = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(customDomain) && !customDomain.includes('..');
+    if (safeHostname) {
+      const url = new URL(`https://${customDomain}/reset-password`);
+      if (url.hostname === customDomain && !url.username && !url.password) {
+        query.set('org', organization.slug);
+        url.search = query.toString();
+        return url.toString();
+      }
+    }
+  }
+
+  if (process.env.NODE_ENV !== 'production') {
+    return organizationScopedUrl('/reset-password', organization.slug, { token });
+  }
+
+  const baseDomain = BASE_DOMAIN.trim().toLowerCase();
+  if (/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(baseDomain) && !baseDomain.includes('..')) {
+    const url = new URL(`https://${organization.slug}.${baseDomain}/reset-password`);
+    url.search = query.toString();
+    return url.toString();
+  }
+
+  // Configuration fallback remains organization-scoped in the frontend API.
+  return organizationScopedUrl('/reset-password', organization.slug, { token });
+}
+
+export async function sendPasswordResetEmail(
+  user: { name: string; email: string },
+  token: string,
+  organization?: OrganizationResetContext,
+): Promise<void> {
+  const link = organization
+    ? organizationResetLink(token, organization)
+    : `${FRONTEND_URL}/reset-password?token=${encodeURIComponent(token)}`;
   const html = wrapper(
     `<h2 style="margin:0 0 12px;color:#1B1B1B;font-size:20px;">Reset your password</h2>` +
       `<p style="margin:0 0 8px;color:#4B5563;font-size:14px;line-height:1.8;">Hi ${esc(user.name)}, we received a request to reset your Nudra password.</p>` +

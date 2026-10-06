@@ -11,8 +11,9 @@
 // and confirming payments from its verified webhook via finalizeOrder().
 import { and, eq } from 'drizzle-orm';
 import { db } from '../db';
-import { orders, courses } from '../db/schema';
-import { enrollStudent } from './enrollment';
+import { orders, courses, courseSections, lessons, enrollments, users } from '../db/schema';
+import { sendEnrollmentEmail } from './mailer';
+import { createNotification } from './notifications';
 
 export type OrderStatus = 'pending' | 'paid' | 'failed' | 'cancelled';
 type Order = typeof orders.$inferSelect;
@@ -55,28 +56,58 @@ export async function createOrder(studentId: string, course: { id: string; price
  * already paid/failed/cancelled is returned unchanged.
  */
 export async function finalizeOrder(orderId: string, outcome: Exclude<OrderStatus, 'pending'>, providerRef?: string) {
-  // Only a pending order may change, and only once (guards against duplicate webhooks).
-  const [updated] = await db
-    .update(orders)
-    .set({
-      status: outcome,
-      paidAt: outcome === 'paid' ? new Date() : null,
-      updatedAt: new Date(),
-      ...(providerRef ? { providerRef } : {}),
-    })
-    .where(and(eq(orders.id, orderId), eq(orders.status, 'pending')))
-    .returning();
+  const result = await db.transaction(async (tx) => {
+    // The order status and enrollment commit together. Concurrent/duplicate
+    // provider callbacks can only transition a pending order once.
+    const [updated] = await tx
+      .update(orders)
+      .set({
+        status: outcome,
+        paidAt: outcome === 'paid' ? new Date() : null,
+        updatedAt: new Date(),
+        ...(providerRef ? { providerRef } : {}),
+      })
+      .where(and(eq(orders.id, orderId), eq(orders.status, 'pending')))
+      .returning();
 
-  const order = updated ?? (await db.select().from(orders).where(eq(orders.id, orderId)).limit(1))[0];
-  if (!order) return null;
+    const order = updated ?? (await tx.select().from(orders).where(eq(orders.id, orderId)).limit(1))[0];
+    if (!order || !updated || outcome !== 'paid') return { order, enrollmentCreated: false, student: null, course: null };
 
-  if (updated && outcome === 'paid') {
-    const [course] = await db
+    const [course] = await tx
       .select({ id: courses.id, title: courses.title })
       .from(courses)
       .where(eq(courses.id, order.courseId))
       .limit(1);
-    if (course) await enrollStudent(order.studentId, course);
+    if (!course) throw new Error(`Order ${order.id} references a missing course`);
+
+    const [firstLesson] = await tx
+      .select({ id: lessons.id })
+      .from(lessons)
+      .innerJoin(courseSections, eq(lessons.sectionId, courseSections.id))
+      .where(eq(lessons.courseId, course.id))
+      .orderBy(courseSections.position, lessons.position)
+      .limit(1);
+    const enrolled = await tx
+      .insert(enrollments)
+      .values({ studentId: order.studentId, courseId: course.id, progress: 0, lastLessonId: firstLesson?.id ?? null })
+      .onConflictDoNothing({ target: [enrollments.studentId, enrollments.courseId] })
+      .returning({ id: enrollments.id });
+    const [student] = enrolled.length
+      ? await tx.select({ name: users.name, email: users.email }).from(users).where(eq(users.id, order.studentId)).limit(1)
+      : [];
+    return { order, enrollmentCreated: enrolled.length > 0, student: student ?? null, course };
+  });
+
+  if (!result.order) return null;
+  if (result.enrollmentCreated && result.student && result.course) {
+    sendEnrollmentEmail(result.student, { title: result.course.title }).catch(console.warn);
+    createNotification(
+      result.order.studentId,
+      'enrollment_confirmed',
+      'تم التسجيل بنجاح',
+      `تم تسجيلك في ${result.course.title}`,
+      `/course/${result.course.id}`
+    ).catch(console.warn);
   }
-  return order;
+  return result.order;
 }

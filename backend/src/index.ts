@@ -22,9 +22,9 @@ import sanaweyaRouter from './routes/sanaweya';
 import { createCommunityRouter } from './routes/community';
 import { ensureBucket } from './lib/minio';
 import { db } from './db';
-import { sessions, users, organizations } from './db/schema';
+import { sessions, users, organizations, courses, enrollments, orgMemberships, subjectCommunities } from './db/schema';
 import { eq, and, gt, or, isNotNull } from 'drizzle-orm';
-import { requireAuth, requireRole } from './middleware/requireAuth';
+import { isUserAllowedInOrganization, requireActiveOrganizationMembership, requireAuth, requireRole } from './middleware/requireAuth';
 import { resolveOrg } from './middleware/resolveOrg';
 import { setIO } from './lib/socket';
 import notificationsRouter from './routes/notifications';
@@ -33,7 +33,8 @@ import adminRouter from './routes/admin';
 import paymentsRouter from './routes/payments';
 import organizationsRouter from './routes/organizations';
 import domainAuthorizationRouter from './routes/domainAuthorization';
-import './workers/transcodeWorker';
+import { catalogRouter, adminCatalogRouter } from './routes/catalog';
+import bookingsRouter from './routes/bookings';
 import { createRedisRateLimitStore } from './middleware/rateLimit';
 
 const isProd = process.env.NODE_ENV === 'production';
@@ -129,13 +130,19 @@ setIO(io);
 
 io.use(async (socket, next) => {
   try {
-    const sessionId = socket.request.headers.cookie
+    const origin = socket.handshake.headers.origin;
+    if (!origin || !parseSafeOrigin(origin) || !(await isAllowedOrigin(origin))) {
+      return next(new Error('Unauthorized'));
+    }
+
+    const sessionCookie = socket.request.headers.cookie
       ?.split(';')
       .map((c) => c.trim())
       .find((c) => c.startsWith('session_id='))
-      ?.split('=')[1];
+      ?.slice('session_id='.length);
+    const sessionId = sessionCookie ? decodeURIComponent(sessionCookie) : undefined;
 
-    if (!sessionId) {
+    if (!sessionId || !/^[0-9a-f-]{36}$/i.test(sessionId)) {
       return next(new Error('Unauthorized'));
     }
 
@@ -150,7 +157,7 @@ io.use(async (socket, next) => {
     }
 
     const userRows = await db
-      .select({ id: users.id, role: users.role })
+      .select({ id: users.id, role: users.role, organizationId: users.organizationId })
       .from(users)
       .where(eq(users.id, rows[0].userId))
       .limit(1);
@@ -159,24 +166,108 @@ io.use(async (socket, next) => {
       return next(new Error('Unauthorized'));
     }
 
+    const hostname = new URL(origin).hostname.toLowerCase();
+    const rootDomain = ORGANIZATION_ROOT_DOMAINS.find((root) => hostname === root || hostname.endsWith(`.${root}`));
+    const isServiceHost = ['www', 'api', 'app', 'assets'].includes(hostname.split('.')[0]);
+    let organization: (typeof organizations.$inferSelect) | undefined;
+
+    if (rootDomain && hostname !== rootDomain && !isServiceHost) {
+      const slug = hostname.slice(0, -(rootDomain.length + 1));
+      const [bySlug] = await db.select().from(organizations).where(and(
+        eq(organizations.slug, slug), eq(organizations.isActive, true),
+      )).limit(1);
+      organization = bySlug;
+    } else if (!rootDomain && !['localhost', '127.0.0.1'].includes(hostname)) {
+      const [byDomain] = await db.select().from(organizations).where(and(
+        eq(organizations.customDomain, hostname), eq(organizations.customDomainStatus, 'active'),
+        eq(organizations.isActive, true), isNotNull(organizations.customDomainVerifiedAt),
+      )).limit(1);
+      organization = byDomain;
+    }
+
+    if (rootDomain && hostname !== rootDomain && !isServiceHost && !organization) {
+      return next(new Error('Unauthorized'));
+    }
+    if (!(await isUserAllowedInOrganization(userRows[0], organization))) {
+      return next(new Error('Unauthorized'));
+    }
+    if (organization && userRows[0].organizationId === organization.id) {
+      const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships).where(and(
+        eq(orgMemberships.orgId, organization.id), eq(orgMemberships.userId, userRows[0].id),
+        eq(orgMemberships.status, 'active'),
+      )).limit(1);
+      if (!membership) return next(new Error('Unauthorized'));
+    }
+
     socket.data.user = userRows[0];
+    socket.data.organization = organization ?? null;
     next();
   } catch (err) {
     next(new Error('Unauthorized'));
   }
 });
 
+async function canJoinCommunityRoom(
+  user: { id: string; role: string; organizationId: string | null },
+  organization: typeof organizations.$inferSelect | null,
+  roomName: string,
+): Promise<boolean> {
+  const uuidPattern = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+  const courseRoom = new RegExp(`^course:(${uuidPattern})$`, 'i').exec(roomName);
+  const subjectRoom = new RegExp(`^subject:(${uuidPattern})$`, 'i').exec(roomName);
+
+  if (roomName === 'community:general') {
+    return organization === null && user.organizationId === null;
+  }
+
+  if (subjectRoom) {
+    if (organization !== null || user.organizationId !== null) return false;
+    const [subject] = await db.select({ id: subjectCommunities.id }).from(subjectCommunities)
+      .where(eq(subjectCommunities.id, subjectRoom[1])).limit(1);
+    return Boolean(subject);
+  }
+
+  if (!courseRoom) return false;
+
+  const [course] = await db.select({ id: courses.id, instructorId: courses.instructorId, organizationId: courses.organizationId })
+    .from(courses).where(eq(courses.id, courseRoom[1])).limit(1);
+  if (!course || (organization ? course.organizationId !== organization.id : course.organizationId !== null)) {
+    return false;
+  }
+
+  if (user.role === 'admin' && user.organizationId === null) return true;
+
+  if (organization) {
+    const [membership] = await db.select({ id: orgMemberships.id, role: orgMemberships.role }).from(orgMemberships).where(and(
+      eq(orgMemberships.orgId, organization.id), eq(orgMemberships.userId, user.id),
+      eq(orgMemberships.status, 'active'),
+    )).limit(1);
+    if (!membership) return false;
+    if (membership.role === 'organization_manager') return true;
+  }
+
+  if (course.instructorId === user.id) return true;
+  const [enrollment] = await db.select({ id: enrollments.id }).from(enrollments).where(and(
+    eq(enrollments.courseId, course.id), eq(enrollments.studentId, user.id),
+  )).limit(1);
+  return Boolean(enrollment);
+}
+
 io.on('connection', (socket) => {
-  const userId = socket.data.user?.id;
+  const userId = socket.data.user?.id as string | undefined;
   if (userId) {
     socket.join(`user:${userId}`);
   }
 
-  socket.on('join_room', (roomName: string) => {
-    if (typeof roomName !== 'string' || !roomName.match(/^[a-z0-9_:.-]+$/i)) {
+  socket.on('join_room', (roomName: unknown) => {
+    const user = socket.data.user as { id: string; role: string; organizationId: string | null } | undefined;
+    const organization = (socket.data.organization ?? null) as typeof organizations.$inferSelect | null;
+    if (!user || typeof roomName !== 'string' || roomName.length > 100) {
       return;
     }
-    socket.join(roomName);
+    void canJoinCommunityRoom(user, organization, roomName).then((allowed) => {
+      if (allowed) return socket.join(roomName);
+    }).catch(() => undefined);
   });
 });
 
@@ -224,6 +315,7 @@ app.use('/api', (req, res, next) => {
   return next();
 });
 app.use(resolveOrg);
+app.use('/api', requireActiveOrganizationMembership);
 
 const safeMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
 app.use('/api', (req, res, next) => {
@@ -334,11 +426,12 @@ app.get('/api/health', (_req, res) => {
 });
 
 const globalOnlyOrgRoutes = new Set([
-  'my-courses', 'progress', 'notes', 'community', 'stats', 'quizzes', 'sanaweya',
-  'notifications', 'search', 'payments',
+  'my-courses', 'progress', 'notes', 'stats', 'quizzes', 'sanaweya',
+  'notifications', 'search', 'payments', 'catalog',
 ]);
 app.use('/api', (req, res, next) => {
-  const section = req.path.split('/').filter(Boolean)[0];
+  const apiPath = req.originalUrl.split('?')[0].replace(/^\/api(?=\/|$)/, '');
+  const section = apiPath.split('/').filter(Boolean)[0];
   if (req.organization && section && globalOnlyOrgRoutes.has(section)) {
     return res.status(404).json({ message: 'This feature is not available in the organization learning space.' });
   }
@@ -374,7 +467,10 @@ app.use('/api/sanaweya', sanaweyaRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/search', searchRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/admin/catalog', adminCatalogRouter);
+app.use('/api/catalog', catalogRouter);
 app.use('/api/payments', paymentsRouter);
+app.use('/api/bookings', bookingsRouter);
 app.use('/api/organizations', organizationsRouter);
 app.use('/api/domains', domainAuthorizationRouter);
 

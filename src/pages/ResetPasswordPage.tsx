@@ -8,6 +8,9 @@ export const ResetPasswordPage: React.FC = () => {
   const navigate = useNavigate();
   const token = searchParams.get('token') ?? '';
   const isSetup = searchParams.get('setup') === '1';
+  const organizationSlug = searchParams.get('org');
+  const organizationQuery = organizationSlug ? `?org=${encodeURIComponent(organizationSlug)}` : '';
+  const requestLink = `/forgot-password${organizationQuery}`;
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -23,7 +26,10 @@ export const ResetPasswordPage: React.FC = () => {
     setError(null);
     try {
       await api.post('/api/auth/reset-password', { token, password });
-      navigate('/login?reset=1', { replace: true });
+      const loginParams = new URLSearchParams({ reset: '1' });
+      if (organizationSlug) loginParams.set('org', organizationSlug);
+      if (isSetup) loginParams.set('setup', '1');
+      navigate(`/login?${loginParams.toString()}`, { replace: true });
     } catch (err: any) {
       setError(
         !err?.response
@@ -51,7 +57,7 @@ export const ResetPasswordPage: React.FC = () => {
             <AlertTriangle className="w-8 h-8 text-amber-500 mx-auto" />
             <h1 className="text-xl font-black text-[#1B1B1B]">Reset link is missing</h1>
             <p className="text-xs text-[#6B7280]">Open the link from your email again, or request a new one.</p>
-            <Link to="/forgot-password" className="inline-block text-xs font-bold text-[#2D6A4F] hover:underline">
+            <Link to={requestLink} className="inline-block text-xs font-bold text-[#2D6A4F] hover:underline">
               Request a new link
             </Link>
           </div>
@@ -92,7 +98,7 @@ export const ResetPasswordPage: React.FC = () => {
                 <div className="text-center space-y-1">
                   <p className="text-xs font-semibold text-red-600">{error}</p>
                   {/expired|invalid/i.test(error) && (
-                    <Link to="/forgot-password" className="text-xs font-bold text-[#2D6A4F] hover:underline">
+                    <Link to={requestLink} className="text-xs font-bold text-[#2D6A4F] hover:underline">
                       Request a new link
                     </Link>
                   )}

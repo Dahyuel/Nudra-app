@@ -9,7 +9,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-nudra}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
@@ -18,7 +18,7 @@ services:
     container_name: nudra-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
 
@@ -32,8 +32,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio_data:/data
 
@@ -42,7 +42,7 @@ services:
     container_name: nudra_ollama
     restart: unless-stopped
     ports:
-      - "11434:11434"
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     entrypoint: ["/bin/sh", "-c"]
@@ -59,8 +59,8 @@ services:
     container_name: nudra_mailpit
     restart: unless-stopped
     ports:
-      - "1025:1025"
-      - "8025:8025"
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
 
   whisper:
     build: ./workers/whisper
@@ -69,7 +69,7 @@ services:
     expose:
       - "5001"
     ports:
-      - "5001:5001"
+      - "127.0.0.1:5001:5001"
     environment:
       MINIO_ENDPOINT: minio
       MINIO_PORT: 9000

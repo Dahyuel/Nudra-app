@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import { eq, and, asc, desc, inArray } from 'drizzle-orm';
+import { eq, and, asc, desc, inArray, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import {
@@ -26,15 +26,27 @@ type LessonAccessResult =
   | { allowed: true; lesson: typeof lessons.$inferSelect }
   | { allowed: false; status: number; message: string };
 
-async function verifyLessonAccess(lessonId: string, userId: string, role: string): Promise<LessonAccessResult> {
-  const lessonRows = await db.select().from(lessons).where(eq(lessons.id, lessonId)).limit(1);
+const courseRealm = (organizationId: string | null) => organizationId === null
+  ? isNull(courses.organizationId)
+  : eq(courses.organizationId, organizationId);
+
+async function verifyLessonAccess(
+  lessonId: string,
+  userId: string,
+  role: string,
+  organizationId: string | null,
+): Promise<LessonAccessResult> {
+  const lessonRows = await db.select({ lesson: lessons, course: courses })
+    .from(lessons)
+    .innerJoin(courses, eq(lessons.courseId, courses.id))
+    .where(and(eq(lessons.id, lessonId), courseRealm(organizationId)))
+    .limit(1);
   if (lessonRows.length === 0) return { allowed: false, status: 404, message: 'Lesson not found' };
 
-  const lesson = lessonRows[0];
+  const { lesson, course } = lessonRows[0];
 
   if (role === 'instructor') {
-    const courseRows = await db.select().from(courses).where(eq(courses.id, lesson.courseId)).limit(1);
-    if (courseRows.length > 0 && courseRows[0].instructorId === userId) {
+    if (course.instructorId === userId) {
       return { allowed: true, lesson };
     }
   }
@@ -51,7 +63,15 @@ async function verifyLessonAccess(lessonId: string, userId: string, role: string
   return { allowed: false, status: 403, message: 'Access denied' };
 }
 
-export async function generateWeakTopics(studentId: string, courseId: string) {
+export async function generateWeakTopics(
+  studentId: string,
+  courseId: string,
+  organizationId: string | null = null,
+) {
+  const courseRows = await db.select({ title: courses.title }).from(courses)
+    .where(and(eq(courses.id, courseId), courseRealm(organizationId))).limit(1);
+  if (courseRows.length === 0) return { error: 'Course not found' };
+
   const attemptRows = await db
     .select({
       attempt: quizAttempts,
@@ -61,14 +81,20 @@ export async function generateWeakTopics(studentId: string, courseId: string) {
     .from(quizAttempts)
     .innerJoin(lessons, eq(quizAttempts.lessonId, lessons.id))
     .innerJoin(quizzes, eq(quizAttempts.quizId, quizzes.id))
-    .where(and(eq(quizAttempts.studentId, studentId), eq(quizAttempts.courseId, courseId)))
+    .innerJoin(courses, eq(quizAttempts.courseId, courses.id))
+    .where(and(
+      eq(quizAttempts.studentId, studentId),
+      eq(quizAttempts.courseId, courseId),
+      eq(quizzes.courseId, courses.id),
+      eq(lessons.courseId, courses.id),
+      courseRealm(organizationId),
+    ))
     .orderBy(desc(quizAttempts.completedAt));
 
   if (attemptRows.length < 2) {
     return { error: 'Not enough quiz data yet. Complete at least 2 lesson quizzes to get a weak topic analysis.' };
   }
 
-  const courseRows = await db.select({ title: courses.title }).from(courses).where(eq(courses.id, courseId)).limit(1);
   const courseTitle = courseRows[0]?.title ?? 'this course';
 
   const questionIds = new Set<string>();
@@ -140,7 +166,11 @@ export async function generateWeakTopics(studentId: string, courseId: string) {
     const rows = await db
       .update(weakTopics)
       .set({ topicSummary, recommendations, generatedAt: new Date() })
-      .where(eq(weakTopics.id, existing[0].id))
+      .where(and(
+        eq(weakTopics.id, existing[0].id),
+        eq(weakTopics.studentId, studentId),
+        eq(weakTopics.courseId, courseId),
+      ))
       .returning();
     saved = rows[0];
   } else {
@@ -160,12 +190,15 @@ router.get('/lesson/:lessonId', async (req: Request, res: Response) => {
     const role = req.user!.role;
     const { lessonId } = req.params;
 
-    const access = await verifyLessonAccess(lessonId, userId, role);
+    const access = await verifyLessonAccess(lessonId, userId, role, req.organization?.id ?? null);
     if (!access.allowed) {
       return res.status(access.status).json({ message: access.message });
     }
 
-    const quizRows = await db.select().from(quizzes).where(eq(quizzes.lessonId, lessonId)).limit(1);
+    const quizRows = await db.select().from(quizzes).where(and(
+      eq(quizzes.lessonId, lessonId),
+      eq(quizzes.courseId, access.lesson.courseId),
+    )).limit(1);
     if (quizRows.length === 0) {
       return res.json({ quiz: null, lastAttempt: null });
     }
@@ -223,9 +256,17 @@ router.post('/:quizId/attempt', requireRole('student'), async (req: Request, res
       return res.status(400).json({ message: 'answers object is required' });
     }
 
-    const quizRows = await db.select().from(quizzes).where(eq(quizzes.id, quizId)).limit(1);
+    const quizRows = await db.select({ quiz: quizzes })
+      .from(quizzes)
+      .innerJoin(courses, eq(quizzes.courseId, courses.id))
+      .where(and(eq(quizzes.id, quizId), courseRealm(req.organization?.id ?? null)))
+      .limit(1);
     if (quizRows.length === 0) return res.status(404).json({ message: 'Quiz not found' });
-    const quiz = quizRows[0];
+    const quiz = quizRows[0].quiz;
+    const lessonAccess = await verifyLessonAccess(quiz.lessonId, studentId, req.user!.role, req.organization?.id ?? null);
+    if (!lessonAccess.allowed || lessonAccess.lesson.courseId !== quiz.courseId) {
+      return res.status(404).json({ message: 'Quiz not found' });
+    }
 
     const questions = await db
       .select()
@@ -290,6 +331,22 @@ router.get('/:quizId/attempts', requireRole('student'), async (req: Request, res
     const studentId = req.user!.id;
     const { quizId } = req.params;
 
+    const quizRows = await db.select({ quiz: quizzes })
+      .from(quizzes)
+      .innerJoin(courses, eq(quizzes.courseId, courses.id))
+      .where(and(eq(quizzes.id, quizId), courseRealm(req.organization?.id ?? null)))
+      .limit(1);
+    if (quizRows.length === 0) return res.status(404).json({ message: 'Quiz not found' });
+    const lessonAccess = await verifyLessonAccess(
+      quizRows[0].quiz.lessonId,
+      studentId,
+      req.user!.role,
+      req.organization?.id ?? null,
+    );
+    if (!lessonAccess.allowed || lessonAccess.lesson.courseId !== quizRows[0].quiz.courseId) {
+      return res.status(404).json({ message: 'Quiz not found' });
+    }
+
     const rows = await db
       .select({
         id: quizAttempts.id,
@@ -324,6 +381,10 @@ router.post('/exam/generate', requireRole('student'), async (req: Request, res: 
     }
     const { courseId, questionCount, timeLimitMinutes } = parsed.data;
 
+    const scopedCourse = await db.select({ id: courses.id }).from(courses)
+      .where(and(eq(courses.id, courseId), courseRealm(req.organization?.id ?? null))).limit(1);
+    if (scopedCourse.length === 0) return res.status(404).json({ message: 'Course not found' });
+
     const enr = await db
       .select()
       .from(enrollments)
@@ -331,7 +392,8 @@ router.post('/exam/generate', requireRole('student'), async (req: Request, res: 
       .limit(1);
     if (enr.length === 0) return res.status(403).json({ message: 'Not enrolled in this course' });
 
-    const courseRows = await db.select({ title: courses.title }).from(courses).where(eq(courses.id, courseId)).limit(1);
+    const courseRows = await db.select({ title: courses.title }).from(courses)
+      .where(and(eq(courses.id, courseId), courseRealm(req.organization?.id ?? null))).limit(1);
     const courseTitle = courseRows[0]?.title ?? '';
 
     const pool = await db
@@ -345,7 +407,8 @@ router.post('/exam/generate', requireRole('student'), async (req: Request, res: 
       })
       .from(quizQuestions)
       .innerJoin(quizzes, eq(quizQuestions.quizId, quizzes.id))
-      .where(eq(quizzes.courseId, courseId));
+      .innerJoin(courses, eq(quizzes.courseId, courses.id))
+      .where(and(eq(quizzes.courseId, courseId), courseRealm(req.organization?.id ?? null)));
 
     const shuffled = pool.sort(() => Math.random() - 0.5);
     const selected = shuffled.slice(0, Math.min(questionCount, shuffled.length));
@@ -378,6 +441,10 @@ router.post('/exam/submit', requireRole('student'), async (req: Request, res: Re
     }
     const { courseId, answers, timeTakenSeconds } = parsed.data;
 
+    const scopedCourse = await db.select({ id: courses.id }).from(courses)
+      .where(and(eq(courses.id, courseId), courseRealm(req.organization?.id ?? null))).limit(1);
+    if (scopedCourse.length === 0) return res.status(404).json({ message: 'Course not found' });
+
     const enr = await db
       .select()
       .from(enrollments)
@@ -404,7 +471,16 @@ router.post('/exam/submit', requireRole('student'), async (req: Request, res: Re
       })
       .from(quizQuestions)
       .innerJoin(quizzes, eq(quizQuestions.quizId, quizzes.id))
-      .where(inArray(quizQuestions.id, answerEntries.map(([id]) => id)));
+      .innerJoin(courses, eq(quizzes.courseId, courses.id))
+      .where(and(
+        inArray(quizQuestions.id, answerEntries.map(([id]) => id)),
+        eq(quizzes.courseId, courseId),
+        courseRealm(req.organization?.id ?? null),
+      ));
+
+    if (questionRows.length !== answerEntries.length) {
+      return res.status(400).json({ message: 'One or more questions do not belong to this course.' });
+    }
 
     const byQuiz = new Map<string, { quizId: string; lessonId: string; questions: typeof questionRows }>();
     for (const row of questionRows) {
@@ -464,7 +540,7 @@ router.post('/exam/submit', requireRole('student'), async (req: Request, res: Re
 
     let weakTopicsResult: { topicSummary: string; recommendations: string; generatedAt: Date } | null = null;
     try {
-      const result = await generateWeakTopics(studentId, courseId);
+      const result = await generateWeakTopics(studentId, courseId, req.organization?.id ?? null);
       if (!('error' in result)) weakTopicsResult = result;
     } catch (weakErr) {
       console.warn('weak topic generation failed after exam', weakErr);

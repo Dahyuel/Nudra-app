@@ -81,6 +81,7 @@ const emptyQuestion = (): QuizQuestionDraft => ({
 export const UploadCoursePage: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const organizationQuery = user?.organizationContext ? `?org=${encodeURIComponent(user.organizationContext.slug)}` : '';
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3 | 4>(1);
 
   // Edit mode: /instructor/upload?edit=<courseId> (from "Edit" on My Courses)
@@ -791,7 +792,7 @@ export const UploadCoursePage: React.FC = () => {
         <div className="p-4 rounded-2xl border border-red-200 bg-red-50 text-sm font-semibold text-red-600 flex items-center gap-2">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span className="flex-1">{loadError}</span>
-          <Link to="/instructor/courses" className="text-xs font-bold underline">
+          <Link to={`/instructor/courses${organizationQuery}`} className="text-xs font-bold underline">
             Back to my courses
           </Link>
         </div>
@@ -855,16 +856,16 @@ export const UploadCoursePage: React.FC = () => {
           </p>
           <div className="flex items-center justify-center gap-3 pt-4">
             <Link
-              to="/instructor/dashboard"
+              to={`/instructor/dashboard${organizationQuery}`}
               className="px-6 py-2.5 rounded-xl border border-gray-200 text-xs font-bold text-gray-700 hover:bg-[#F8FAF9]"
             >
               Return to Studio Dashboard
             </Link>
             <Link
-              to="/browse"
+              to={user?.organizationContext ? `/organization?org=${encodeURIComponent(user.organizationContext.slug)}` : '/browse'}
               className="px-6 py-2.5 rounded-xl bg-[#2D6A4F] text-white text-xs font-bold hover:bg-[#23533e] shadow-sm"
             >
-              View in Course Catalog
+              {user?.organizationContext ? 'View organization courses' : 'View in Course Catalog'}
             </Link>
           </div>
         </div>
