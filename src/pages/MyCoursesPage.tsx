@@ -180,12 +180,12 @@ export const MyCoursesPage: React.FC = () => {
         ))}
 
         {/* Suggestion to enroll more courses */}
-        <div className="rounded-2xl p-6 bg-gradient-to-br from-emerald-50 to-[#F8FAF9] border-2 border-dashed border-[#B7E4C7] flex flex-col items-center justify-center text-center p-8">
-          <div className="w-12 h-12 rounded-full bg-white shadow-2xs flex items-center justify-center text-[#2D6A4F] mb-3">
+        <div className="rounded-2xl bg-white/5 border-2 border-dashed border-white/10 flex flex-col items-center justify-center text-center p-8">
+          <div className="w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-400 mb-3">
             <BookOpen className="w-6 h-6" />
           </div>
-          <h3 className="font-bold text-base text-[#1B1B1B]">Expand Your Knowledge</h3>
-          <p className="text-xs text-[#6B7280] max-w-xs mt-1 mb-4">
+          <h3 className="font-bold text-base text-white">Expand Your Knowledge</h3>
+          <p className="text-xs text-gray-400 max-w-xs mt-1 mb-4">
             Discover new certifications in Arabic NLP, Generative AI, or Advanced UI Systems.
           </p>
           <Link

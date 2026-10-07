@@ -5,9 +5,8 @@ import { getRedisUrl } from '../lib/redisConnection';
 
 const redis = new Redis(getRedisUrl(), {
   maxRetriesPerRequest: 1,
-  enableOfflineQueue: false,
+  enableOfflineQueue: true,
   connectTimeout: 2500,
-  lazyConnect: true,
   retryStrategy: () => 1000,
 });
 

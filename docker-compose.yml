@@ -23,7 +23,7 @@ services:
       - redis_data:/data
 
   minio:
-    image: quay.io/minio/minio
+    image: elestio/minio
     container_name: nudra-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"

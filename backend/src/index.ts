@@ -476,6 +476,9 @@ app.use('/api/domains', domainAuthorizationRouter);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   if (res.headersSent) return;
+  if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ message: 'File is too large. Maximum size is 5MB.' });
+  }
   const status = typeof err === 'object' && err !== null && 'status' in err && typeof err.status === 'number'
     ? err.status
     : 500;

@@ -421,29 +421,36 @@ const VideoPlayerPageInner: React.FC = () => {
                   {activeLesson.title}
                 </h2>
               </div>
-              <span className="text-[11px] font-mono text-emerald-300 bg-black/40 px-2 py-0.5 rounded border border-white/10">
-                1080p 60fps
-              </span>
+              {activeLesson.videoUrl && (
+                <span className="text-[11px] font-mono text-emerald-300 bg-black/40 px-2 py-0.5 rounded border border-white/10">
+                  1080p 60fps
+                </span>
+              )}
             </div>
 
-            {/* Center Big Play Button Overlay (when paused or placeholder) */}
-            {(!activeLesson.videoUrl || !isPlaying) && (
+            {/* Center: "No video" message OR big play/pause button */}
+            {!activeLesson.videoUrl ? (
+              <div className="relative z-10 flex flex-col items-center justify-center my-auto gap-3">
+                <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-white/10 border-2 border-dashed border-white/30 flex items-center justify-center">
+                  <Play className="w-8 h-8 text-white/40" />
+                </div>
+                <p className="text-white/70 text-sm font-semibold">No video uploaded for this lesson</p>
+                <p className="text-white/40 text-xs">The instructor hasn't added a video yet.</p>
+              </div>
+            ) : !isPlaying ? (
               <div className="relative z-10 flex items-center justify-center my-auto">
                 <button
-                  onClick={() => setIsPlaying(!isPlaying)}
+                  onClick={() => setIsPlaying(true)}
                   className="w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-[#2D6A4F]/90 hover:bg-[#2D6A4F] text-white flex items-center justify-center shadow-2xl transition-transform hover:scale-105"
-                  aria-label={isPlaying ? 'Pause' : 'Play'}
+                  aria-label="Play"
                 >
-                  {isPlaying ? (
-                    <Pause className="w-8 h-8 fill-current" />
-                  ) : (
-                    <Play className="w-8 h-8 fill-current ml-1" />
-                  )}
+                  <Play className="w-8 h-8 fill-current ml-1" />
                 </button>
               </div>
-            )}
+            ) : null}
 
-            {/* Video Controls Bar Bottom */}
+            {/* Video Controls Bar Bottom — only when a video exists */}
+            {activeLesson.videoUrl && (
             <div className="relative z-10 p-4 sm:p-5 bg-gradient-to-t from-black/90 via-black/60 to-transparent space-y-3">
               {/* Scrubber Progress Bar */}
               <div className="relative w-full">
@@ -527,6 +534,7 @@ const VideoPlayerPageInner: React.FC = () => {
                 </div>
               </div>
             </div>
+            )}
           </div>
 
           {/* Previous / Next Lesson Navigation Bar */}
@@ -700,13 +708,13 @@ const VideoPlayerPageInner: React.FC = () => {
             {bottomTab === 'ai-tutor' && (
               <div className="space-y-6 animate-in fade-in duration-150">
                 {/* Header Action: Generate Flashcards button */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl bg-gradient-to-r from-emerald-50 to-[#F8FAF9] border border-emerald-100">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 rounded-xl bg-white/5 border border-white/10">
                   <div>
-                    <h4 className="font-bold text-xs sm:text-sm text-gray-900 flex items-center gap-1.5">
-                      <Sparkles className="w-4 h-4 text-[#2D6A4F]" />
+                    <h4 className="font-bold text-xs sm:text-sm text-emerald-300 flex items-center gap-1.5">
+                      <Sparkles className="w-4 h-4 text-emerald-400" />
                       <span>Instant Lesson Knowledge Check</span>
                     </h4>
-                    <p className="text-[11px] text-gray-500 mt-0.5">
+                    <p className="text-[11px] text-gray-400 mt-0.5">
                       Generate 5 interactive flashcards based on this video lesson
                     </p>
                   </div>
@@ -726,7 +734,7 @@ const VideoPlayerPageInner: React.FC = () => {
                 </div>
 
                 {flashcardsError && (
-                  <p className="text-xs text-red-600">{flashcardsError}</p>
+                  <p className="text-xs text-red-400">{flashcardsError}</p>
                 )}
 
                 {/* Flashcards Divs (Question on Front, Answer on click) */}

@@ -417,6 +417,11 @@ export const UploadCoursePage: React.FC = () => {
       setQuizError('At least 2 questions are required');
       return;
     }
+    const hasEmptyFields = quizQuestions.some(q => !q.questionText.trim() || !q.optionA.trim() || !q.optionB.trim() || !q.optionC.trim() || !q.optionD.trim());
+    if (hasEmptyFields) {
+      setQuizError('Please fill out all question texts and options before saving.');
+      return;
+    }
     setQuizSaving(true);
     setQuizError(null);
     try {
@@ -1106,6 +1111,12 @@ export const UploadCoursePage: React.FC = () => {
                                 <p className="text-[11px] font-semibold text-red-500">{quizError}</p>
                               )}
 
+                              {lesson.id.startsWith('l-') && (
+                                <p className="text-[10px] text-amber-600 font-medium bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                                  ⚠ Publish the course first — quiz saving and AI generation are available after the course is saved.
+                                </p>
+                              )}
+
                               {quizQuestions.map((q, qIndex) => (
                                 <div key={qIndex} className="p-3 rounded-xl bg-white border border-gray-100 space-y-2">
                                   <div className="flex items-center justify-between">
@@ -1178,6 +1189,9 @@ export const UploadCoursePage: React.FC = () => {
                                 {quizSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
                                 <span>{quizSaving ? 'Saving...' : 'Save Quiz'}</span>
                               </button>
+                              {lesson.id.startsWith('l-') && (
+                                <p className="text-[10px] text-center text-gray-400 font-medium">Publish the course to enable saving.</p>
+                              )}
                             </div>
                           )}
                         </div>
