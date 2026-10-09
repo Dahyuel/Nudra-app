@@ -51,7 +51,7 @@ is_our_process() {
   local pid="$1" cwd cmd
   cwd="$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)"
   cmd="$(ps -o args= -p "$pid" 2>/dev/null || true)"
-  [[ "$cwd" == "$ROOT_DIR" || "$cwd" == "$BACKEND_DIR" || "$cwd" == "${PROXY_DIR:-$ROOT_DIR/deepseek-web-to-api-main}" || "$cmd" == *"$ROOT_DIR"* || "$cmd" == *"$BACKEND_DIR"* || "$cmd" == *"${PROXY_DIR:-$ROOT_DIR/deepseek-web-to-api-main}"* ]]
+  [[ "$cwd" == "$ROOT_DIR" || "$cwd" == "$BACKEND_DIR" || "$cmd" == *"$ROOT_DIR"* || "$cmd" == *"$BACKEND_DIR"* ]]
 }
 
 stop_pid_group() {
@@ -219,27 +219,11 @@ require_env_value WHISPER_API_KEY
   echo "[Nudra] ERROR: start.sh is for development only; set NODE_ENV=development in backend/.env."
   exit 1
 }
-PROXY_DIR="$ROOT_DIR/deepseek-web-to-api-main"
-if [ ! -x "$PROXY_DIR/.venv/bin/python" ]; then
-  echo "[Nudra] ERROR: DeepSeek proxy virtual environment is missing. Create it and install deepseek-web-to-api-main/requirements.txt."
-  exit 1
-fi
-for credential in DEEPSEEK_AUTHORIZATION DEEPSEEK_COOKIE DEEPSEEK_DEVICE_ID; do
-  if ! grep -Eq "^[[:space:]]*${credential}=.+" "$PROXY_DIR/.env"; then
-    echo "[Nudra] ERROR: DeepSeek proxy credential $credential is missing in deepseek-web-to-api-main/.env."
-    exit 1
-  fi
-done
-for port in 4981 3001 3000; do
+for port in 3001 3000; do
   clear_project_port "$port" || exit 1
 done
 start_dev_dependencies || exit 1
 configure_local_development_database || exit 1
-start_service deepseek "$PROXY_DIR" "$PROXY_DIR/.venv/bin/python -m app.main" 4981 || exit 1
-if ! wait_for_url http://localhost:4981/health deepseek; then
-  echo "[Nudra] ERROR: DeepSeek proxy did not start. Check $LOGS_DIR/deepseek.log."
-  exit 1
-fi
 start_service video-worker "$BACKEND_DIR" "npm run dev:worker" none || exit 1
 start_service backend "$BACKEND_DIR" "npm run dev" 3001 || exit 1
 if ! wait_for_url http://localhost:3001/api/health backend; then
@@ -261,5 +245,4 @@ echo "[Nudra] Local app is ready: http://localhost:3000"
 echo "  Backend:  http://localhost:3001 (log: $LOGS_DIR/backend.log)"
 echo "  Worker:   background video jobs (log: $LOGS_DIR/video-worker.log)"
 echo "  Frontend: http://localhost:3000 (log: $LOGS_DIR/frontend.log)"
-echo "  DeepSeek: http://localhost:4981 (log: $LOGS_DIR/deepseek.log)"
-echo "  Stop app and proxy with: ./stop.sh"
+echo "  Stop app with: ./stop.sh"

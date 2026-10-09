@@ -14,14 +14,13 @@
 
 Nudra is a modern learning platform built for the Egyptian secondary-education market. It combines course delivery, AI-assisted study tools, and exam preparation into a single experience, with dedicated surfaces for **students**, **instructors**, and **admins**.
 
-The app is split into four cooperating pieces:
+The app is split into three cooperating pieces:
 
 | Layer | Stack | Responsibility |
 |-------|-------|----------------|
 | Frontend | React 19, Vite, Tailwind CSS 4, React Router 7, TanStack Query | Student & instructor UI, Sanaweya section, AI tutor, community |
 | Backend | Express 4, Drizzle ORM, PostgreSQL (pgvector), Redis/BullMQ, S3-compatible SILO | REST API, auth, video pipeline, AI orchestration, payments |
 | Workers | Python (FastAPI + faster-whisper) | Video transcription for AI features |
-| AI proxy | Python (FastAPI, OpenAI-compatible) | Bridges the DeepSeek web session to an OpenAI-style API |
 
 ---
 
@@ -73,7 +72,6 @@ Nudra-app/
 │       ├── scripts/         # admin & instructor CLI tools
 │       └── workers/         # HLS transcode worker
 ├── workers/whisper/         # FastAPI transcription service
-├── deepseek-web-to-api-main/# OpenAI-compatible DeepSeek proxy
 ├── docker-compose.yml       # Postgres, Redis, MinIO, Ollama, Mailpit, Whisper
 ├── start.sh / stop.sh       # One-command local orchestration
 └── vite.config.ts
@@ -85,7 +83,6 @@ Nudra-app/
 
 - **Node.js 24** (used by the application images and recommended for local development)
 - **Docker** and **Docker Compose**
-- **Python 3.11+** (for the DeepSeek proxy)
 
 ---
 
@@ -145,18 +142,15 @@ npm run dev       # Vite on http://localhost:3000
 
 `npm run dev` intentionally uses `--strictPort` so it refuses to start if port 3000 is taken, rather than silently colliding with the backend.
 
-### 5. AI proxy (optional, required for AI features)
+### 5. Configure AI services (optional, required for AI features)
 
-```bash
-cd deepseek-web-to-api-main
-pip install -r requirements.txt
-python scripts/capture_browser_state.py   # capture browser credentials into .env
-python -m app.main                        # listens on http://localhost:4981
-```
+Development chat uses an independently hosted DeepSeek-compatible endpoint configured through `DEEPSEEK_PROXY_URL` in `backend/.env`; it must expose `/openai/v1/chat/completions`. Development embeddings use Ollama. This repository does not include or start a chat proxy.
+
+For hosted Qwen chat and embeddings, set `AI_ENVIRONMENT=production` and configure `DASHSCOPE_API_KEY`, `QWEN_API_BASE_URL`, and the model settings in `backend/.env`.
 
 ### One-command alternative
 
-`./start.sh` starts the backend and frontend in the background after checking `backend/.env` and its configured PostgreSQL connection (`DATABASE_URL`). It does not start local infrastructure, push the schema, or seed the database. Stop the two app services with `./stop.sh`; logs are written to `.logs/`.
+`./start.sh` starts the local Docker dependencies, builds the backend, applies local database migrations, and launches the backend, video worker, and frontend in the background. It checks `backend/.env` and derives `DATABASE_URL` from the root Compose settings. AI chat endpoints are configured separately. Stop the app and development containers with `./stop.sh`; logs are written to `.logs/`.
 
 ### Health check
 
@@ -295,7 +289,7 @@ Key environment variables (see `.env.example` for the full list):
 
 **Backend** — Express 4, Drizzle ORM, PostgreSQL 16 (pgvector), Redis + BullMQ, SILO (MinIO-compatible S3 API), Socket.IO, Zod, bcryptjs, Resend API via the durable mail outbox, PDFKit, Helmet, express-rate-limit, native FFmpeg.
 
-**Workers / AI** — Python FastAPI, faster-whisper; DeepSeek web-to-API proxy (FastAPI).
+**Workers / AI** — Python FastAPI, faster-whisper; independently configured chat endpoints and Ollama or hosted Qwen embeddings.
 
 ---
 

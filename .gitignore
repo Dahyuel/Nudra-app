@@ -35,9 +35,6 @@ creds.txt
 backend/.env
 backend/.env.*
 !backend/.env.example
-deepseek-web-to-api-main/.env
-deepseek-web-to-api-main/.env.*
-!.deepseek-web-to-api-main/.env.example
 
 # Runtime state
 cookies/
