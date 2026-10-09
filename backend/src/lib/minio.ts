@@ -13,9 +13,11 @@ import { createWriteStream } from 'fs';
 import { pipeline } from 'stream/promises';
 import type { Readable } from 'stream';
 
-export const THUMBNAIL_BUCKET = 'nudra-thumbnails';
-export const RAW_VIDEO_BUCKET = 'nudra-raw-videos';
-export const HLS_BUCKET = 'nudra-hls';
+const bucketPrefix=process.env.MINIO_BUCKET_PREFIX || 'nudra';
+if (!/^[a-z0-9][a-z0-9-]{2,30}$/.test(bucketPrefix)) throw new Error('Invalid MINIO_BUCKET_PREFIX');
+export const THUMBNAIL_BUCKET = bucketPrefix+'-thumbnails';
+export const RAW_VIDEO_BUCKET = bucketPrefix+'-raw-videos';
+export const HLS_BUCKET = bucketPrefix+'-hls';
 
 const isProduction = process.env.NODE_ENV === 'production';
 const configuredEndpoint = process.env.MINIO_ENDPOINT || 'localhost';
@@ -34,6 +36,8 @@ export const minioClient = new S3Client({
   endpoint: storageEndpoint,
   forcePathStyle: true,
   credentials: { accessKeyId, secretAccessKey },
+  maxAttempts: 2,
+  requestHandler: { connectionTimeout: 2500, requestTimeout: 30000 },
 });
 
 // Kept as a source-compatible alias for routes that still use the old name.
@@ -70,7 +74,7 @@ export async function ensureBucket(): Promise<void> {
 
     // Development uses direct browser access for public buckets. Production
     // access policies are applied by the VPS MinIO bootstrap, not by the API.
-    if (!isProduction && (bucket === THUMBNAIL_BUCKET || bucket === HLS_BUCKET)) {
+    if (!isProduction && bucket === THUMBNAIL_BUCKET) {
       const policy = {
         Version: '2012-10-17',
         Statement: [{
@@ -139,6 +143,10 @@ export async function listRawVideoKeys(lessonId: string): Promise<string[]> {
 }
 
 export const storage = {
+  async bucketExists(bucket: string) {
+    await minioClient.send(new HeadBucketCommand({ Bucket: bucket }), { abortSignal: AbortSignal.timeout(2500) });
+    return true;
+  },
   async getObject(bucket: string, key: string) {
     const res = await minioClient.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
     return res.Body as Readable;

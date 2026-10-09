@@ -19,7 +19,7 @@ The app is split into four cooperating pieces:
 | Layer | Stack | Responsibility |
 |-------|-------|----------------|
 | Frontend | React 19, Vite, Tailwind CSS 4, React Router 7, TanStack Query | Student & instructor UI, Sanaweya section, AI tutor, community |
-| Backend | Express 4, Drizzle ORM, PostgreSQL (pgvector), Redis/BullMQ, MinIO | REST API, auth, video pipeline, AI orchestration, payments |
+| Backend | Express 4, Drizzle ORM, PostgreSQL (pgvector), Redis/BullMQ, S3-compatible SILO | REST API, auth, video pipeline, AI orchestration, payments |
 | Workers | Python (FastAPI + faster-whisper) | Video transcription for AI features |
 | AI proxy | Python (FastAPI, OpenAI-compatible) | Bridges the DeepSeek web session to an OpenAI-style API |
 
@@ -48,7 +48,7 @@ The app is split into four cooperating pieces:
 ### Platform
 - Cookie-based sessions, bcrypt password hashing, and role-based access (`student`, `instructor`, `admin`).
 - Tiered rate limiting and request slowdown on auth, AI, and video endpoints.
-- Transactional email (welcome, password reset, instructor decisions) via SMTP/Mailpit.
+- Transactional email is queued durably and delivered through the Resend API when explicitly configured; development sends no email by default.
 - Real-time notifications over Socket.IO.
 
 ---
@@ -83,7 +83,7 @@ Nudra-app/
 
 ## Prerequisites
 
-- **Node.js 20.19+** (or 22+)
+- **Node.js 24** (used by the application images and recommended for local development)
 - **Docker** and **Docker Compose**
 - **Python 3.11+** (for the DeepSeek proxy)
 
@@ -97,6 +97,8 @@ Nudra-app/
 cp .env.example .env
 cp backend/.env.example backend/.env
 ```
+
+The root Compose file runs the local database and services on your computer. Keep both development database URLs pointed to `127.0.0.1:5432/nudra`; `./start.sh` derives its URL from the root Compose settings.
 
 Generate strong secrets (never commit real `.env` files):
 
@@ -126,7 +128,8 @@ docker compose up -d postgres redis minio mailpit whisper
 ```bash
 cd backend
 npm install
-npm run db:push   # create tables
+npm run build
+npm run db:migrate # apply the versioned SQL migrations
 npm run db:seed   # insert demo data
 npm run dev       # API on http://localhost:3001
 ```
@@ -278,7 +281,8 @@ Key environment variables (see `.env.example` for the full list):
 | `OLLAMA_URL` | Embedding model endpoint |
 | `DEEPSEEK_PROXY_URL` | OpenAI-compatible AI proxy URL |
 | `WHISPER_URL` / `WHISPER_API_KEY` | Transcription service |
-| `SMTP_*` | Outbound email (Mailpit in dev) |
+| `RESEND_API_KEY` | Optional for local development; required for production email delivery |
+| `EMAIL_OUTBOX_KEY` | Encryption key for the durable email outbox and administrator MFA |
 | `ALLOWED_ORIGINS` | CORS allow-list |
 | `VITE_API_URL` | Frontend → backend URL |
 | `FRONTEND_URL` | Base URL for email links |
@@ -289,7 +293,7 @@ Key environment variables (see `.env.example` for the full list):
 
 **Frontend** — React 19, TypeScript, Vite 8, Tailwind CSS 4, React Router 7, TanStack Query 5, Recharts, hls.js, lucide-react, react-markdown + KaTeX, socket.io-client.
 
-**Backend** — Express 4, Drizzle ORM, PostgreSQL 16 (pgvector), Redis + BullMQ, MinIO, Socket.IO, Zod, bcryptjs, Nodemailer, PDFKit, Helmet, express-rate-limit, fluent-ffmpeg.
+**Backend** — Express 4, Drizzle ORM, PostgreSQL 16 (pgvector), Redis + BullMQ, SILO (MinIO-compatible S3 API), Socket.IO, Zod, bcryptjs, Resend API via the durable mail outbox, PDFKit, Helmet, express-rate-limit, native FFmpeg.
 
 **Workers / AI** — Python FastAPI, faster-whisper; DeepSeek web-to-API proxy (FastAPI).
 

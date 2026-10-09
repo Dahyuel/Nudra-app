@@ -1,3 +1,4 @@
+import { courseAccess } from '../lib/access';
 import { Router, Request, Response } from 'express';
 import { randomBytes } from 'crypto';
 import { eq, and, count, sql, isNull } from 'drizzle-orm';
@@ -15,191 +16,53 @@ function toDateString(d: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-async function recordStudySession(studentId: string): Promise<void> {
-  const today = toDateString(new Date());
-  await db
-    .insert(studySessions)
-    .values({ studentId, date: today, minutesStudied: 5 })
-    .onConflictDoUpdate({
-      target: [studySessions.studentId, studySessions.date],
-      set: { minutesStudied: sql`${studySessions.minutesStudied} + 5` },
-    });
-}
-
-async function verifyStudentLessonAccess(
-  lessonId: string,
-  studentId: string,
-  organizationId: string | null,
-): Promise<{ allowed: boolean; status?: number; message?: string; courseId?: string }> {
-  const courseScope = organizationId === null
-    ? isNull(courses.organizationId)
-    : eq(courses.organizationId, organizationId);
-  const lessonRows = await db.select({ lesson: lessons, course: courses })
-    .from(lessons)
-    .innerJoin(courses, eq(lessons.courseId, courses.id))
-    .where(and(eq(lessons.id, lessonId), courseScope))
-    .limit(1);
-  if (lessonRows.length === 0) {
-    return { allowed: false, status: 404, message: 'Lesson not found' };
-  }
-
-  const { lesson, course } = lessonRows[0];
-  const courseId = course.id;
-
-  if (lesson.isFree) {
-    return { allowed: true, courseId };
-  }
-
-  if (courseId) {
-    const enr = await db
-      .select()
-      .from(enrollments)
-      .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, courseId)))
-      .limit(1);
-    if (enr.length > 0) {
-      return { allowed: true, courseId };
-    }
-  }
-
-  return { allowed: false, status: 403, message: 'Not enrolled in this course' };
-}
-
 const router = Router();
 
-async function recalcCourseProgress(studentId: string, courseId: string): Promise<number> {
-  const totalRows = await db
-    .select({ count: count(lessons.id) })
-    .from(lessons)
-    .where(eq(lessons.courseId, courseId));
-  const total = Number(totalRows[0]?.count ?? 0);
-
-  const completedRows = await db
-    .select({ count: count(lessonProgress.id) })
-    .from(lessonProgress)
-    .where(
-      and(
-        eq(lessonProgress.studentId, studentId),
-        eq(lessonProgress.courseId, courseId),
-        eq(lessonProgress.completed, true)
-      )
-    );
-  const completed = Number(completedRows[0]?.count ?? 0);
-
-  const percentage = total > 0 ? Math.round((completed / total) * 100) : 0;
-
-  await db
-    .update(enrollments)
-    .set({ progress: percentage })
-    .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, courseId)));
-
-  return percentage;
-}
-
 router.post('/lesson/:lessonId', requireAuth, requireRole('student'), async (req: Request, res: Response) => {
-  try {
-    const studentId = req.user!.id;
-    const { lessonId } = req.params;
-    const { watchedSeconds, completed } = req.body ?? {};
-
-    if (typeof watchedSeconds !== 'number' || watchedSeconds < 0) {
-      return res.status(400).json({ message: 'watchedSeconds must be a non-negative number' });
-    }
-
-    const access = await verifyStudentLessonAccess(lessonId, studentId, req.organization?.id ?? null);
-    if (!access.allowed) {
-      return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
-    }
-    const courseId = access.courseId!;
-
-    const existing = await db
-      .select()
-      .from(lessonProgress)
-      .where(and(eq(lessonProgress.studentId, studentId), eq(lessonProgress.lessonId, lessonId)))
-      .limit(1);
-
-    const isCompleted = completed === true;
-    let updated;
-
-    if (existing.length > 0) {
-      const wasCompleted = existing[0].completed;
-      const completedAt = isCompleted && !wasCompleted ? new Date() : existing[0].completedAt;
-      const rows = await db
-        .update(lessonProgress)
-        .set({ watchedSeconds, completed: isCompleted, completedAt })
-        .where(eq(lessonProgress.id, existing[0].id))
-        .returning();
-      updated = rows[0];
-    } else {
-      const rows = await db
-        .insert(lessonProgress)
-        .values({
-          studentId,
-          lessonId,
-          courseId,
-          watchedSeconds,
-          completed: isCompleted,
-          completedAt: isCompleted ? new Date() : null,
-        })
-        .returning();
-      updated = rows[0];
-    }
-
-    const progress = await recalcCourseProgress(studentId, courseId);
-
-    await db
-      .update(enrollments)
-      .set({ lastLessonId: lessonId })
-      .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, courseId)));
-
-    await recordStudySession(studentId);
-
-    let certificateEarned: { certCode: string; courseId: string; courseTitle: string } | null = null;
-
-    if (progress === 100 && courseId) {
-      const existingCert = await db
-        .select()
-        .from(certificates)
-        .where(and(eq(certificates.studentId, studentId), eq(certificates.courseId, courseId)))
-        .limit(1);
-
-      if (existingCert.length === 0) {
-        const courseRows = await db.select().from(courses).where(eq(courses.id, courseId)).limit(1);
-        const certCode = `CERT-EDR-${randomBytes(8).toString('hex').toUpperCase()}`;
-        try {
-          await db.insert(certificates).values({ studentId, courseId, certCode });
-          certificateEarned = {
-            certCode,
-            courseId,
-            courseTitle: courseRows[0]?.title ?? '',
-          };
-        } catch (certErr) {
-          console.error('certificate insert error', certErr);
-        }
-      }
-    }
-
-    if (certificateEarned) {
-      sendCertificateEmail(
-        { name: req.user!.name, email: req.user!.email },
-        { title: certificateEarned.courseTitle },
-        certificateEarned.certCode
-      ).catch(console.warn);
-      createNotification(
-        studentId,
-        'certificate_earned',
-        'تهانينا! حصلت على شهادة',
-        `أتممت مقرر ${certificateEarned.courseTitle}`,
-        '/progress'
-      ).catch(console.warn);
-    }
-
-    await checkAndAwardBadges(studentId);
-
-    return res.json({ lessonProgress: updated, courseProgress: progress, certificateEarned });
-  } catch (err) {
-    console.error('lesson progress error', err);
-    return res.status(500).json({ message: 'Internal server error' });
-  }
+ const studentId = req.user!.id;
+ const { lessonId } = req.params;
+ const { watchedSeconds, completed } = req.body ?? {};
+ if (!Number.isSafeInteger(watchedSeconds) || watchedSeconds < 0 || watchedSeconds > 86400 || (completed !== undefined && typeof completed !== 'boolean')) {
+   return res.status(400).json({ message: 'Invalid lesson progress' });
+ }
+ const [lesson] = await db.select().from(lessons).where(eq(lessons.id, lessonId)).limit(1);
+ if (!lesson) return res.status(404).json({ message: 'Lesson not found' });
+ const access = await courseAccess(lesson.courseId, studentId, req.user!.role, req.organization?.id ?? null);
+ if (!access.course || !access.enrollment) return res.status(403).json({ message: 'Active enrollment is required to record progress' });
+ const courseId = lesson.courseId;
+ const result = await db.transaction(async (tx) => {
+   const [currentCourse] = await tx.select().from(courses).where(eq(courses.id,courseId)).for('share');
+   if (!currentCourse) throw Object.assign(new Error('Course was removed'), {status:404});
+   const [enrollment] = await tx.select().from(enrollments).where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, courseId), eq(enrollments.status, 'active'))).for('update');
+   if (!enrollment) throw Object.assign(new Error('Enrollment was revoked'), { status: 403 });
+   const [existing] = await tx.select().from(lessonProgress).where(and(eq(lessonProgress.studentId, studentId), eq(lessonProgress.lessonId, lessonId)));
+   const now = new Date();
+   const previous = existing?.watchedSeconds ?? 0;
+   const elapsed = existing ? Math.min(60, Math.max(0, Math.floor((now.getTime() - existing.lastActivityAt.getTime()) / 1000))) : 0;
+   const duration = lesson.durationSeconds ?? 0;
+   const accepted = Math.max(previous, Math.min(watchedSeconds, previous + elapsed, duration || 86400));
+   const isCompleted = duration > 0 && accepted >= Math.ceil(duration * 0.9) && (existing?.completed === true || completed === true);
+   const [updated] = await tx.insert(lessonProgress).values({studentId, lessonId, courseId, watchedSeconds: accepted, completed: isCompleted, completedAt: isCompleted ? existing?.completedAt ?? now : null, lastActivityAt: now})
+     .onConflictDoUpdate({target: [lessonProgress.studentId, lessonProgress.lessonId], set: {watchedSeconds: accepted, completed: isCompleted, completedAt: isCompleted ? existing?.completedAt ?? now : null, lastActivityAt: now}}).returning();
+   const totals = await tx.execute(sql`SELECT count(l.id)::int AS total, count(p.id) FILTER (WHERE p.completed AND l.duration_seconds > 0 AND p.watched_seconds >= ceil(l.duration_seconds * 0.9))::int AS completed FROM lessons l LEFT JOIN lesson_progress p ON p.lesson_id=l.id AND p.student_id=${studentId} WHERE l.course_id=${courseId}`);
+   const counts = totals.rows[0] as { total: number; completed: number };
+   const progress = counts.total ? Math.min(100, Math.round(counts.completed * 100 / counts.total)) : 0;
+   await tx.update(enrollments).set({progress, lastLessonId: lessonId}).where(eq(enrollments.id, enrollment.id));
+   const minutes = Math.floor(accepted / 60) - Math.floor(previous / 60);
+   if (minutes > 0) await tx.insert(studySessions).values({studentId, date: now.toISOString().slice(0,10), minutesStudied: minutes}).onConflictDoUpdate({target:[studySessions.studentId,studySessions.date],set:{minutesStudied:sql`${studySessions.minutesStudied} + ${minutes}`}});
+   let certificateEarned = null;
+   if (progress === 100 && currentCourse.isPublished && currentCourse.approvalStatus === 'approved') {
+     const certCode = 'CERT-EDR-' + randomBytes(8).toString('hex').toUpperCase();
+     const inserted = await tx.insert(certificates).values({studentId,courseId,certCode}).onConflictDoNothing().returning();
+     if (inserted.length) {
+       certificateEarned = {certCode,courseId,courseTitle:currentCourse.title};
+       await sendCertificateEmail({name:req.user!.name,email:req.user!.email},{title:currentCourse.title},certCode,tx);
+     }
+   }
+   return {lessonProgress:updated,courseProgress:progress,certificateEarned};
+ });
+ await checkAndAwardBadges(studentId);
+ return res.json(result);
 });
 
 router.get('/course/:courseId', requireAuth, requireRole('student'), async (req: Request, res: Response) => {

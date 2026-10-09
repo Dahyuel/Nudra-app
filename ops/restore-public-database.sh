@@ -23,11 +23,22 @@ else
 fi
 
 compose=(docker compose --env-file .env.production -f compose.production.yml)
-table_count="$("${compose[@]}" exec -T postgres sh -ec 'export PGPASSWORD="$POSTGRES_MIGRATION_PASSWORD"; psql --no-psqlrc --username "$POSTGRES_MIGRATION_USER" --host 127.0.0.1 --dbname "$POSTGRES_DB" --set=ON_ERROR_STOP=1 --tuples-only --no-align -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname = $$public$$ AND c.relkind IN ($$r$$, $$p$$)"')"
+table_count="$("${compose[@]}" exec -T postgres sh -ec 'export PGPASSWORD="$POSTGRES_MIGRATION_PASSWORD"; psql --no-psqlrc --username "$POSTGRES_MIGRATION_USER" --host 127.0.0.1 --dbname "$POSTGRES_DB" --set=ON_ERROR_STOP=1 --tuples-only --no-align -c "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname = \$\$public\$\$ AND c.relkind IN (\$\$r\$\$, \$\$p\$\$)"')"
 if [[ "$table_count" != "0" ]]; then
   echo "Target database is not empty ($table_count public tables found); refusing to overwrite it." >&2
   exit 2
 fi
 
-"${compose[@]}" exec -T postgres sh -ec 'export PGPASSWORD="$POSTGRES_MIGRATION_PASSWORD"; pg_restore --no-owner --no-acl --exit-on-error --username "$POSTGRES_MIGRATION_USER" --host 127.0.0.1 --dbname "$POSTGRES_DB" -' < "$dump_file"
+"${compose[@]}" exec -T postgres sh -ec '
+  export PGPASSWORD="$POSTGRES_MIGRATION_PASSWORD"
+  umask 077
+  archive=$(mktemp)
+  contents=$(mktemp)
+  trap '\''rm -f "$archive" "$contents"'\'' EXIT
+  cat > "$archive"
+  # The bootstrap already owns public and installs pgvector there. Restore
+  # its contents, without trying to recreate or drop that existing schema.
+  pg_restore --list "$archive" | grep -v -E '\''^[0-9]+; [0-9]+ [0-9]+ SCHEMA - public '\'' > "$contents"
+  pg_restore --no-owner --no-acl --exit-on-error --use-list="$contents" --username "$POSTGRES_MIGRATION_USER" --host 127.0.0.1 --dbname "$POSTGRES_DB" "$archive"
+' < "$dump_file"
 echo "Restore complete. Verify table counts, pgvector, accounts, ownership, and object storage before DNS cutover."

@@ -133,6 +133,7 @@ const ExamSimulatorPageInner: React.FC = () => {
     try {
       const timeTakenSeconds = timeLimitMinutes * 60 - remainingSeconds;
       const { data } = await api.post('/api/quizzes/exam/submit', {
+        examId,
         courseId: selectedCourseId,
         answers,
         timeTakenSeconds,
@@ -245,6 +246,7 @@ const ExamSimulatorPageInner: React.FC = () => {
 
     return (
       <div className="max-w-3xl mx-auto space-y-4">
+        {startError && <p role="alert" className="rounded-xl bg-red-50 p-4 text-red-700">{startError}</p>}
         <div className="sticky top-0 z-10 bg-white border-b border-gray-100 rounded-2xl shadow-sm px-5 py-4 flex items-center justify-between gap-4">
           <div>
             <h2 className="text-sm font-black text-gray-900">Exam in Progress</h2>

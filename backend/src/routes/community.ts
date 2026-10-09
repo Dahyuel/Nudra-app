@@ -571,7 +571,7 @@ export function createCommunityRouter(io: Server) {
       }
 
       const post = postRows[0];
-      const scopeId = post.courseId ?? 'general';
+      const scopeId = post.courseId ?? (post.subjectCommunityId ? `subject:${post.subjectCommunityId}` : 'general');
 
       const access = await verifyCourseCommunityAccess(req, userId, req.user!.role, post.courseId);
       if (!access.allowed) {

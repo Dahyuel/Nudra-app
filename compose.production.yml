@@ -1,8 +1,15 @@
 name: nudra-production
 
+x-logging: &bounded-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:pg16@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b
+    logging: *bounded-logging
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
@@ -30,11 +37,12 @@ services:
       - no-new-privileges:true
 
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    logging: *bounded-logging
     restart: unless-stopped
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD}
-    command: ["sh", "-ec", "exec redis-server --appendonly yes --requirepass \"$$REDIS_PASSWORD\""]
+    command: ["sh", "-ec", "exec redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy noeviction --requirepass \"$$REDIS_PASSWORD\""]
     volumes:
       - redis_data:/data
     networks:
@@ -52,7 +60,8 @@ services:
       - no-new-privileges:true
 
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-10-15T17-29-55Z
+    image: pgsty/silo@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
+    logging: *bounded-logging
     restart: unless-stopped
     command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
     environment:
@@ -70,7 +79,8 @@ services:
       - no-new-privileges:true
 
   minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: pgsty/silo@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
+    logging: *bounded-logging
     restart: "no"
     entrypoint: ["/bin/sh", "/infra/minio-init.sh"]
     environment:
@@ -78,9 +88,11 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}
       MINIO_APP_USER: ${MINIO_APP_USER:?set MINIO_APP_USER}
       MINIO_APP_PASSWORD: ${MINIO_APP_PASSWORD:?set MINIO_APP_PASSWORD}
+      MINIO_BUCKET_PREFIX: ${MINIO_BUCKET_PREFIX:-nudra}
     volumes:
       - ./infra/minio-init.sh:/infra/minio-init.sh:ro
       - ./infra/minio-app-policy.json:/policies/nudra-app.json:ro
+      - ./infra/minio-app-policy-demo.json:/policies/nudra-demo-app.json:ro
     networks:
       - storage
     depends_on:
@@ -94,8 +106,10 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    logging: *bounded-logging
     restart: unless-stopped
     command: ["node", "dist/index.js"]
+    stop_grace_period: 30s
     env_file:
       - .env.production.api
     environment:
@@ -113,6 +127,7 @@ services:
       MINIO_ACCESS_KEY: ${MINIO_APP_USER:?set MINIO_APP_USER}
       MINIO_SECRET_KEY: ${MINIO_APP_PASSWORD:?set MINIO_APP_PASSWORD}
       PUBLIC_STORAGE_URL: https://${ASSETS_HOST:?set ASSETS_HOST}/storage
+      MINIO_BUCKET_PREFIX: ${MINIO_BUCKET_PREFIX:-nudra}
       DOMAIN_AUTH_SHARED_SECRET: ${DOMAIN_AUTH_SHARED_SECRET:?set DOMAIN_AUTH_SHARED_SECRET}
       ALLOWED_ORIGINS: https://${BASE_DOMAIN:?set BASE_DOMAIN},https://www.${BASE_DOMAIN:?set BASE_DOMAIN}
     networks:
@@ -149,8 +164,16 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    logging: *bounded-logging
     restart: unless-stopped
     command: ["node", "dist/workers/transcodeWorker.js"]
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "node", "dist/scripts/worker-health.js"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
     env_file:
       - .env.production.worker
     environment:
@@ -165,6 +188,7 @@ services:
       MINIO_SECRET_KEY: ${MINIO_APP_PASSWORD:?set MINIO_APP_PASSWORD}
       PUBLIC_STORAGE_URL: https://${ASSETS_HOST:?set ASSETS_HOST}/storage
       TRANSCODE_CONCURRENCY: "1"
+      MINIO_BUCKET_PREFIX: ${MINIO_BUCKET_PREFIX:-nudra}
     networks:
       data:
         ipv4_address: 172.29.0.5
@@ -195,6 +219,7 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_URL: ""
+    logging: *bounded-logging
     restart: unless-stopped
     networks:
       web:
@@ -219,6 +244,7 @@ services:
     build:
       context: .
       dockerfile: infra/domain-auth.Dockerfile
+    logging: *bounded-logging
     restart: unless-stopped
     environment:
       DOMAIN_AUTH_SHARED_SECRET: ${DOMAIN_AUTH_SHARED_SECRET:?set DOMAIN_AUTH_SHARED_SECRET}
@@ -240,7 +266,8 @@ services:
       - no-new-privileges:true
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2-alpine@sha256:d8542f48d34a9cf4e4c11a478865229840e87e4c96ea3f439101f31a5d35f75f
+    logging: *bounded-logging
     restart: unless-stopped
     environment:
       ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}

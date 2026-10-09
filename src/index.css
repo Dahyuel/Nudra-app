@@ -244,6 +244,49 @@
   border-color: rgb(248 113 113 / 0.4);
 }
 
+/* Brand-specific student dashboard palette, including its light mint surfaces. */
+.dark .student-dashboard .text-\[\#19372A\] {
+  color: var(--d-text);
+}
+.dark .student-dashboard .text-\[\#718078\],
+.dark .student-dashboard .text-\[\#819087\],
+.dark .student-dashboard .text-\[\#7D9A89\] {
+  color: var(--d-muted);
+}
+.dark .student-dashboard .text-\[\#61806E\],
+.dark .student-dashboard .text-\[\#557262\] {
+  color: var(--d-brand);
+}
+.dark .student-dashboard .bg-\[\#E8F5EC\],
+.dark .student-dashboard .bg-\[\#F5F8F6\],
+.dark .student-dashboard .bg-\[\#FBFDFB\],
+.dark .student-dashboard .bg-\[\#E8EEEA\] {
+  background-color: var(--d-surface-2);
+}
+.dark .student-dashboard .border-\[\#E8EEEA\] {
+  border-color: var(--d-border);
+}
+
+.student-dashboard a:focus-visible {
+  outline: 2px solid #2D6A4F;
+  outline-offset: 3px;
+  border-radius: inherit;
+}
+.dark .student-dashboard a:focus-visible {
+  outline-color: #B7E4C7;
+}
+.student-dashboard a:not([aria-disabled='true']) {
+  -webkit-tap-highlight-color: rgb(45 106 79 / 0.12);
+}
+@media (prefers-reduced-motion: reduce) {
+  .student-dashboard a {
+    transition: none !important;
+  }
+  .student-dashboard a:hover {
+    transform: none !important;
+  }
+}
+
 /* The wordmark PNG is dark text on transparent: render it light in dark mode */
 .dark img[src$='nudra-text-logo.png'] {
   filter: brightness(0) invert(0.92);
@@ -256,4 +299,3 @@
 .dark ::-webkit-scrollbar-thumb {
   background: var(--d-border);
 }
-

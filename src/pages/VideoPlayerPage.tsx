@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import Hls from 'hls.js';
+import type Hls from 'hls.js';
 import {
   Play,
   Pause,
@@ -196,21 +196,28 @@ const VideoPlayerPageInner: React.FC = () => {
       ? activeLesson.videoUrl
       : `${apiBase}${activeLesson.videoUrl}`;
 
-    if (Hls.isSupported()) {
-      const hls = new Hls({
-        xhrSetup: (xhr) => {
-          xhr.withCredentials = true;
-        },
-      });
-      hls.loadSource(source);
-      hls.attachMedia(video);
-      hlsRef.current = hls;
-    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    let disposed = false;
+    if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = source;
       video.crossOrigin = 'use-credentials';
+    } else {
+      void import('hls.js').then(({ default: HlsPlayer }) => {
+        if (disposed || !HlsPlayer.isSupported()) return;
+        const hls = new HlsPlayer({
+          xhrSetup: (xhr) => {
+            xhr.withCredentials = true;
+          },
+        });
+        hls.loadSource(source);
+        hls.attachMedia(video);
+        hlsRef.current = hls;
+      }).catch(() => {
+        if (!disposed) showPlayerToast('Unable to initialize video playback. Please try again.');
+      });
     }
 
     return () => {
+      disposed = true;
       hlsRef.current?.destroy();
       hlsRef.current = null;
       video.pause();

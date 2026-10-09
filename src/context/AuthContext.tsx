@@ -63,7 +63,7 @@ export const homePathFor = (user: User) => {
 interface AuthContextValue {
   user: User | null;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string, otp?: string) => Promise<void>;
   register: (name: string, email: string, password: string, phone: string, grade?: string) => Promise<void>;
   applyToTeach: (input: InstructorApplicationInput) => Promise<void>;
   refreshUser: () => Promise<User | null>;
@@ -111,9 +111,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // The server knows each account's role, so login needs no role picker.
   const login = useCallback(
-    async (email: string, password: string) => {
+    async (email: string, password: string, otp?: string) => {
       try {
-        const { data } = await api.post('/api/auth/login', { email, password });
+        const { data } = await api.post('/api/auth/login', { email, password, ...(otp ? {otp} : {}) });
         setUser(data.user);
         navigate(homePathFor(data.user));
       } catch (err: any) {

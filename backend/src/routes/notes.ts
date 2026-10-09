@@ -1,51 +1,12 @@
+import { lessonAccess } from '../lib/access';
 import { Router, Request, Response } from 'express';
 import { eq, and, desc, isNull } from 'drizzle-orm';
 import { db } from '../db';
 import { lessons, courses, enrollments, lessonNotes } from '../db/schema';
 import { requireAuth } from '../middleware/requireAuth';
 
-async function verifyLessonAccess(
-  lessonId: string,
-  userId: string,
-  role: string,
-  organizationId: string | null,
-): Promise<{ allowed: boolean; status?: number; message?: string }> {
-  const courseScope = organizationId === null
-    ? isNull(courses.organizationId)
-    : eq(courses.organizationId, organizationId);
-  const lessonRows = await db.select({ lesson: lessons, course: courses })
-    .from(lessons)
-    .innerJoin(courses, eq(lessons.courseId, courses.id))
-    .where(and(eq(lessons.id, lessonId), courseScope))
-    .limit(1);
-  if (lessonRows.length === 0) {
-    return { allowed: false, status: 404, message: 'Lesson not found' };
-  }
-
-  const { lesson, course } = lessonRows[0];
-
-  if (role === 'instructor' && lesson.courseId) {
-    if (course.instructorId === userId) {
-      return { allowed: true };
-    }
-  }
-
-  if (lesson.isFree) {
-    return { allowed: true };
-  }
-
-  if (lesson.courseId) {
-    const enr = await db
-      .select()
-      .from(enrollments)
-      .where(and(eq(enrollments.studentId, userId), eq(enrollments.courseId, lesson.courseId)))
-      .limit(1);
-    if (enr.length > 0) {
-      return { allowed: true };
-    }
-  }
-
-  return { allowed: false, status: 403, message: 'Access denied' };
+async function verifyLessonAccess(lessonId: string, userId: string, role: string, organizationId: string | null) {
+  return lessonAccess(lessonId, userId, role, organizationId ?? null);
 }
 
 const router = Router();
@@ -79,10 +40,10 @@ router.post('/lesson/:lessonId', requireAuth, async (req: Request, res: Response
     const { lessonId } = req.params;
     const { content, timestampSeconds } = req.body ?? {};
 
-    if (typeof content !== 'string' || !content.trim()) {
+    if (typeof content !== 'string' || !content.trim() || content.length > 10000) {
       return res.status(400).json({ message: 'content is required' });
     }
-    if (typeof timestampSeconds !== 'number' || timestampSeconds < 0) {
+    if (!Number.isSafeInteger(timestampSeconds) || timestampSeconds < 0 || timestampSeconds > 86400) {
       return res.status(400).json({ message: 'timestampSeconds must be a non-negative number' });
     }
 

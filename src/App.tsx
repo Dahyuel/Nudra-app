@@ -16,6 +16,7 @@ const AcademicHomePage = lazyNamed(() => import('./pages/AcademicPage'), 'Academ
 const AcademicCatalogPage = lazyNamed(() => import('./pages/AcademicPage'), 'AcademicCatalogPage');
 const OrganizationsDirectoryPage = lazyNamed(() => import('./pages/OrganizationsDirectoryPage'), 'OrganizationsDirectoryPage');
 const OfflineBookingsPage = lazyNamed(() => import('./pages/OfflineBookingsPage'), 'OfflineBookingsPage');
+const LearningPathPage = lazyNamed(() => import('./pages/LearningPathPage'), 'LearningPathPage');
 const MyCoursesPage = lazyNamed(() => import('./pages/MyCoursesPage'), 'MyCoursesPage');
 const CommunityPage = lazyNamed(() => import('./pages/CommunityPage'), 'CommunityPage');
 const AiTutorPage = lazyNamed(() => import('./pages/AiTutorPage'), 'AiTutorPage');
@@ -184,6 +185,7 @@ export default function App() {
         <Route element={<StudentPortalLayout />}>
           <Route element={<ProtectedRoute requiredRole="student" />}>
             <Route path="/bookings" element={<OfflineBookingsPage />} />
+            <Route path="/learning-path" element={<LearningPathPage />} />
           </Route>
           <Route path="/student-portal" element={<DashboardPage />} />
           <Route path="/dashboard" element={<DashboardPage />} />

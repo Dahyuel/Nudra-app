@@ -7,7 +7,7 @@
 import bcrypt from 'bcryptjs';
 import { randomBytes } from 'crypto';
 import { and, eq, isNull } from 'drizzle-orm';
-import { db } from '../db';
+import { db, pool } from '../db';
 import { users, sessions } from '../db/schema';
 
 const usage = () => {
@@ -85,7 +85,10 @@ async function promote(email: string) {
     process.exitCode = 1;
     return;
   }
-  await db.update(users).set({ role: 'admin', updatedAt: new Date() }).where(eq(users.id, user.id));
+  await db.transaction(async tx=>{
+    await tx.update(users).set({ role: 'admin', updatedAt: new Date() }).where(eq(users.id, user.id));
+    await tx.delete(sessions).where(eq(sessions.userId,user.id));
+  });
   console.log(`${user.email} -> admin`);
 }
 
@@ -128,4 +131,4 @@ main()
     console.error(err);
     process.exitCode = 1;
   })
-  .finally(() => process.exit());
+  .finally(() => pool.end());

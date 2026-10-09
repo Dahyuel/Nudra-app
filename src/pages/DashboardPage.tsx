@@ -1,421 +1,156 @@
-import React, { useState } from 'react';
+import React from 'react';
 import { Link } from 'react-router-dom';
 import {
+  ArrowRight,
   BookOpen,
   CheckCircle2,
-  Clock,
+  Clock3,
+  Compass,
   Flame,
-  ArrowRight,
+  GraduationCap,
   Play,
-  Calendar,
-  Users,
-  Video,
-  ExternalLink,
-  MessageSquare,
-  ThumbsUp,
-  ShieldAlert,
   Sparkles,
-  Plus
+  TrendingUp,
 } from 'lucide-react';
-import { StatCard } from '../components/StatCard';
-import { WeeklyChart } from '../components/WeeklyChart';
-import { FocusTimer } from '../components/FocusTimer';
-import { ProgressArc } from '../components/ProgressArc';
-import { TopInstructorsCard } from '../components/TopInstructorsCard';
 import { useAuth } from '../context/AuthContext';
 import { PageErrorBanner } from '../components/PageErrorBanner';
+import { WeeklyChart } from '../components/WeeklyChart';
 import { useMyEnrollments } from '../hooks/useMyEnrollments';
 import { useProgressStats } from '../hooks/useProgressStats';
-import { useQuery } from '@tanstack/react-query';
-import api from '../lib/api';
+
+const card = 'rounded-3xl border border-[#E8EEEA] bg-white shadow-[0_8px_30px_rgba(20,55,37,0.04)]';
+
+const DashboardStat: React.FC<{ icon: React.ElementType; label: string; value: string | number; note: string; tint: string }> = ({ icon: Icon, label, value, note, tint }) => (
+  <div className={`${card} p-5 sm:p-6`}>
+    <div className="flex items-start justify-between gap-3">
+      <div><p className="text-sm font-medium text-[#557262]">{label}</p><p className="mt-3 text-3xl font-bold tracking-tight text-[#19372A]">{value}</p></div>
+      <span className={`grid h-11 w-11 place-items-center rounded-2xl ${tint}`}><Icon size={20} /></span>
+    </div>
+    <p className="mt-3 text-xs text-[#557262]">{note}</p>
+  </div>
+);
 
 export const DashboardPage: React.FC = () => {
   const { user } = useAuth();
   const { enrollments, isLoading, error: enrollmentsError } = useMyEnrollments();
   const { stats, error: statsError } = useProgressStats();
-
-  const completedCount = enrollments.filter((e) => e.progress === 100).length;
-  const inProgress = enrollments.filter((e) => e.progress < 100);
-  const recentCourses = enrollments.slice(0, 4);
+  const firstName = user?.name?.trim().split(/\s+/)[0] || 'Learner';
+  const inProgress = enrollments.filter((enrollment) => enrollment.progress < 100);
   const continueCourse = inProgress[0];
-
-  const hoursLearned =
-    Math.round(
-      (stats?.totalHoursThisWeek ?? (stats?.weeklyHours ?? []).reduce((sum, h) => sum + h.hours, 0)) * 10
-    ) / 10;
-
-  // The API returns the last 7 days ending today, so today is the last entry.
+  const completedCount = enrollments.filter((enrollment) => enrollment.progress >= 100).length;
   const weeklyHours = stats?.weeklyHours ?? [];
-  const weeklyChartData = weeklyHours.map((item, index) => ({
-    day: item.day,
-    hours: item.hours,
-    active: index === weeklyHours.length - 1,
-  }));
-
-  const avgProgress =
-    enrollments.length > 0
-      ? Math.round(enrollments.reduce((sum, e) => sum + e.progress, 0) / enrollments.length)
-      : 0;
-  const topEnrollment = enrollments.reduce<(typeof enrollments)[number] | null>(
-    (best, e) => (best === null || e.progress > best.progress ? e : best),
-    null
-  );
-  const topCourseTitle = topEnrollment
-    ? topEnrollment.title.length > 30
-      ? `${topEnrollment.title.slice(0, 30)}...`
-      : topEnrollment.title
-    : 'No course yet';
-
-  const {
-    data: communityPosts,
-    isLoading: postsLoading,
-    isError: postsError,
-  } = useQuery({
-    queryKey: ['community-posts-preview'],
-    queryFn: async () => {
-      const { data } = await api.get('/api/community/posts', { params: { limit: 3 } });
-      return (data.posts ?? []) as Array<{
-        id: string;
-        title: string;
-        author: { name: string | null; isAnonymous: boolean };
-        voteCount: number;
-        replyCount: number;
-        createdAt: string;
-      }>;
-    },
-  });
+  const hoursThisWeek = Math.round((stats?.totalHoursThisWeek ?? weeklyHours.reduce((sum, item) => sum + item.hours, 0)) * 10) / 10;
+  const weeklyChartData = weeklyHours.map((item, index) => ({ ...item, active: index === weeklyHours.length - 1 }));
+  const averageProgress = enrollments.length
+    ? Math.round(enrollments.reduce((sum, enrollment) => sum + enrollment.progress, 0) / enrollments.length)
+    : 0;
+  const featuredImage = continueCourse?.thumbnail || '/images/learning-banner.webp';
+  const featuredStyle: React.CSSProperties = {
+    backgroundImage: `linear-gradient(90deg, rgba(19, 55, 39, 0.96) 0%, rgba(19, 55, 39, 0.88) 46%, rgba(19, 55, 39, 0.38) 100%), url("${featuredImage}")`,
+    backgroundPosition: 'center',
+    backgroundSize: 'cover',
+  };
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-200">
+    <div className="student-dashboard mx-auto max-w-[1440px] space-y-8 pb-10 text-[#19372A] sm:space-y-10">
       <PageErrorBanner errors={[enrollmentsError, statsError]} />
-      {/* Page Header - Donezo style */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+
+      <header className="flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-[#1B1B1B] tracking-tight">
-            Dashboard
-          </h1>
-          <p className="text-sm text-[#6B7280] mt-1">
-            Plan, prioritize and accomplish your learning goals with ease
-          </p>
+          <p className="text-sm font-semibold text-[#2D6A4F]">Your learning space</p>
+          <h1 className="mt-1 text-3xl font-bold tracking-tight sm:text-4xl">Welcome back, {firstName}</h1>
+          <p className="mt-2 max-w-xl text-sm leading-6 text-[#557262]">A little progress every day adds up. Pick up where you left off or find something new to learn.</p>
         </div>
+        <Link to="/browse" className="inline-flex w-fit items-center gap-2 rounded-2xl bg-[#2D6A4F] px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-[#24583F]">
+          <Compass size={17} /> Explore courses <ArrowRight size={16} />
+        </Link>
+      </header>
 
-        <div className="flex items-center gap-3">
-          <Link
-            to="/browse"
-            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#2D6A4F] hover:bg-[#23533e] text-white text-sm font-bold shadow-sm transition-all hover:shadow"
-          >
-            <Plus className="w-4 h-4" />
-            <span>Explore Courses</span>
-          </Link>
-          <Link
-            to="/ai-tutor"
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 text-[#1B1B1B] text-sm font-semibold shadow-2xs transition-colors"
-          >
-            <Sparkles className="w-4 h-4 text-[#52B788]" />
-            <span>Ask AI Tutor</span>
-          </Link>
-        </div>
-      </div>
-
-      {/* 1. Four Stat Cards (Donezo Style: 1st is signature primary green card, other 3 are sleek white cards) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        {isLoading ? (
-          Array.from({ length: 4 }).map((_, i) => (
-            <div
-              key={i}
-              className="rounded-2xl p-6 bg-white border border-gray-100 shadow-sm animate-pulse space-y-4"
-            >
-              <div className="h-3 w-1/2 bg-gray-200 rounded" />
-              <div className="h-8 w-1/3 bg-gray-200 rounded" />
-              <div className="h-3 w-2/3 bg-gray-200 rounded" />
-            </div>
-          ))
-        ) : (
-          <>
-            <StatCard
-              title="Enrolled Courses"
-              value={enrollments.length}
-              badge="Active learning journey"
-              isPrimary={true}
-              icon={BookOpen}
-            />
-            <StatCard
-              title="Completed Courses"
-              value={completedCount}
-              subtitle="Certificates earned"
-              isPrimary={false}
-              icon={CheckCircle2}
-            />
-            <StatCard
-              title="Hours Learned"
-              value={hoursLearned}
-              subtitle="This week"
-              isPrimary={false}
-              icon={Clock}
-            />
-            <StatCard
-              title="Current Streak"
-              value={`${stats?.streak ?? 0} Days`}
-              subtitle="Days in a row"
-              isPrimary={false}
-              icon={Flame}
-            />
-          </>
-        )}
-      </div>
-
-      {/* 2. Middle Row: Learning Analytics & Donezo-inspired Live Reminders & Top Instructors */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left: Weekly Study Analytics Chart */}
-        <div className="lg:col-span-6">
-          <WeeklyChart data={weeklyChartData} />
-        </div>
-
-        {/* Center: Upcoming Live Sessions Card (Modeled directly after Donezo's "Reminders / Meeting With Mr.Thomson" card) */}
-        <div className="lg:col-span-3">
-          <div className="h-full rounded-2xl p-6 bg-white border border-gray-100 shadow-sm flex flex-col justify-between">
-            <div>
-              <div className="flex items-center justify-between mb-4">
-                <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                  Upcoming Live Session
-                </span>
+      <section className="relative isolate overflow-hidden rounded-[2rem] bg-[#173D2C] p-6 text-white shadow-[0_20px_55px_rgba(23,61,44,0.18)] sm:p-9 lg:min-h-[300px] lg:p-10" style={featuredStyle} aria-label="Continue learning">
+        <div className="flex h-full items-center justify-between gap-6 lg:gap-10">
+          <div className="max-w-2xl py-2 lg:max-w-[62%] lg:py-4">
+            <h2 className="text-3xl font-bold leading-tight tracking-tight sm:text-4xl">{continueCourse ? 'Ready to continue?' : 'Your next chapter starts here.'}</h2>
+            <p className="mt-3 max-w-lg text-sm leading-6 text-white/85">
+              {continueCourse ? `Continue ${continueCourse.title} and keep your learning momentum going.` : 'Choose a course that interests you and build a learning routine that works for you.'}
+            </p>
+            {continueCourse ? (
+              <div className="mt-6 flex flex-wrap items-center gap-3">
+                <Link to={continueCourse.lastLessonId ? `/course/${continueCourse.id}/lesson/${continueCourse.lastLessonId}` : `/course/${continueCourse.id}`} className="inline-flex items-center gap-2 rounded-xl bg-[#B7E4C7] px-4 py-3 text-sm font-bold text-[#173D2C] transition hover:bg-white">
+                  <Play size={16} fill="currentColor" /> Continue learning
+                </Link>
               </div>
-
-              <h3 className="text-lg font-bold text-[#1B1B1B] leading-snug line-clamp-2">
-                Live Sessions
-              </h3>
-
-              <div className="flex items-center gap-2 text-xs font-semibold text-gray-500 mt-3">
-                <Calendar className="w-4 h-4 text-[#2D6A4F]" />
-                <span>Live sessions are not available yet.</span>
-              </div>
-            </div>
-
-            <div className="mt-6 pt-2">
-              <Link
-                to="/community"
-                className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-xl bg-[#2D6A4F] hover:bg-[#22523d] text-white text-xs font-bold shadow-sm transition-all"
-              >
-                <Video className="w-4 h-4" />
-                <span>Visit Community</span>
+            ) : (
+              <Link to="/browse" className="mt-6 inline-flex items-center gap-2 rounded-xl bg-[#B7E4C7] px-4 py-3 text-sm font-bold text-[#173D2C] transition hover:bg-white">
+                Find your first course <ArrowRight size={16} />
               </Link>
-            </div>
+            )}
           </div>
-        </div>
-
-        {/* Right: Top Instructors (Matching Donezo's "Top Collaborators" card) */}
-        <div className="lg:col-span-3">
-          <TopInstructorsCard />
-        </div>
-      </div>
-
-      {/* 3. Continue Learning Section (2 Course Cards with Progress Bars) */}
-      <section className="space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-bold text-[#1B1B1B]">Continue Learning</h2>
-            <p className="text-xs text-[#6B7280]">Pick up right where you left off</p>
-          </div>
-          <Link
-            to="/my-courses"
-            className="text-xs font-bold text-[#2D6A4F] hover:text-[#1E4D38] flex items-center gap-1 group"
-          >
-            <span>View All ({enrollments.length})</span>
-            <ArrowRight className="w-3.5 h-3.5 transition-transform group-hover:translate-x-0.5" />
-          </Link>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {isLoading &&
-            Array.from({ length: 2 }).map((_, i) => (
-              <div
-                key={i}
-                className="rounded-2xl p-6 bg-white border border-gray-100 shadow-sm animate-pulse space-y-4"
-              >
-                <div className="flex items-start gap-4">
-                  <div className="w-20 h-20 rounded-xl bg-gray-200 shrink-0" />
-                  <div className="flex-1 space-y-2 pt-1">
-                    <div className="h-3 w-1/3 bg-gray-200 rounded" />
-                    <div className="h-4 w-5/6 bg-gray-200 rounded" />
-                  </div>
-                </div>
-                <div className="h-10 w-full bg-gray-200 rounded-xl" />
-                <div className="h-2.5 w-full bg-gray-200 rounded-full" />
-              </div>
-            ))}
-
-          {!isLoading && !continueCourse && (
-            <div className="rounded-2xl p-8 bg-white border border-gray-100 shadow-sm text-center md:col-span-2">
-              <BookOpen className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-              <h3 className="font-bold text-gray-900 text-sm">No courses in progress</h3>
-              <p className="text-xs text-gray-500 mt-1">
-                Browse the catalog to start your learning journey.
-              </p>
-              <Link
-                to="/browse"
-                className="mt-4 inline-block px-4 py-2 rounded-xl bg-[#2D6A4F] text-white text-xs font-bold hover:bg-[#22523d] transition-colors"
-              >
-                Explore Courses
-              </Link>
-            </div>
-          )}
-
-          {!isLoading && continueCourse && (
+          {continueCourse && <div className="hidden shrink-0 flex-col items-center gap-3 text-center sm:flex lg:mr-3">
             <div
-              key={continueCourse.id}
-              className="rounded-2xl p-6 bg-white border border-gray-100 shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow group"
+              role="progressbar"
+              aria-label={`Progress in ${continueCourse.title}`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={continueCourse.progress}
+              aria-valuetext={`${continueCourse.progress}% complete`}
+              className="relative grid h-32 w-32 place-items-center rounded-full p-[9px] shadow-[0_12px_35px_rgba(0,0,0,0.18)]"
+              style={{ background: `conic-gradient(#B7E4C7 ${continueCourse.progress}%, rgba(255,255,255,0.2) 0)` }}
             >
-              <div>
-                <div className="flex items-start gap-4 mb-4">
-                  <img
-                    src={continueCourse.thumbnail ?? undefined}
-                    alt={continueCourse.title}
-                    referrerPolicy="no-referrer"
-                    className="w-20 h-20 rounded-xl object-cover shadow-2xs group-hover:scale-102 transition-transform shrink-0"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <span className="text-[11px] font-bold text-[#2D6A4F] bg-[#B7E4C7]/30 px-2 py-0.5 rounded-md inline-block mb-1.5">
-                      {continueCourse.category}
-                    </span>
-                    <h3 className="font-bold text-sm text-[#1B1B1B] leading-snug line-clamp-2">
-                      {continueCourse.title}
-                    </h3>
-                    <p className="text-xs text-gray-500 mt-1 flex items-center gap-1.5">
-                      <span>By {continueCourse.instructor.name}</span>
-                    </p>
-                  </div>
-                </div>
-
-                {/* Current lesson note */}
-                <div className="bg-[#F8FAF9] p-3 rounded-xl mb-4 border border-gray-100">
-                  <p className="text-[11px] font-medium text-gray-500 uppercase tracking-wider">
-                    Current Lesson
-                  </p>
-                  <p className="text-xs font-semibold text-gray-800 truncate mt-0.5">
-                    {continueCourse.lastLessonId ? 'Resume where you left off' : 'Start your first lesson'}
-                  </p>
-                </div>
-              </div>
-
-              <div>
-                {/* Progress bar */}
-                <div className="mb-4">
-                  <div className="flex items-center justify-between text-xs font-bold mb-1.5">
-                    <span className="text-gray-600">Course Progress</span>
-                    <span className="text-[#2D6A4F]">{continueCourse.progress}%</span>
-                  </div>
-                  <div className="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden">
-                    <div
-                      className="bg-[#2D6A4F] h-full rounded-full transition-all duration-500"
-                      style={{ width: `${continueCourse.progress}%` }}
-                    />
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between pt-1">
-                  <span className="text-xs text-gray-500">
-                    {continueCourse.lessonsCount} lessons
-                  </span>
-                  <Link
-                    to={
-                      continueCourse.lastLessonId
-                        ? `/course/${continueCourse.id}/lesson/${continueCourse.lastLessonId}`
-                        : `/course/${continueCourse.id}`
-                    }
-                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#2D6A4F] hover:bg-[#23533e] text-white text-xs font-bold transition-all shadow-2xs"
-                  >
-                    <Play className="w-3.5 h-3.5 fill-current" />
-                    <span>Resume Lesson</span>
-                  </Link>
-                </div>
+              <div className="grid h-full w-full place-items-center rounded-full border border-white/15 bg-[#173D2C]/90 backdrop-blur-sm">
+                <div><p className="text-3xl font-bold tracking-tight">{continueCourse.progress}%</p><p className="mt-0.5 text-xs font-semibold uppercase tracking-[0.16em] text-white/75">completed</p></div>
               </div>
             </div>
-          )}
+            <span className="text-xs font-medium text-white/75">Course progress</span>
+          </div>}
         </div>
       </section>
 
-      {/* 4. Bottom Row: Progress Arc, Focus Timer & Community Mini Feed */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left: Study Progress Arc (Donezo Adaptrum-P3 style) */}
-        <div className="lg:col-span-4">
-          <ProgressArc
-            title="Course Progress"
-            subtitle={`${enrollments.length} enrolled`}
-            percentage={avgProgress}
-          />
-        </div>
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4" aria-label="Learning summary">
+        {isLoading ? Array.from({ length: 4 }).map((_, index) => <div key={index} className={`${card} h-32 animate-pulse bg-white`} />) : <>
+          <DashboardStat icon={BookOpen} label="My courses" value={enrollments.length} note="Courses in your library" tint="bg-[#E8F5EC] text-[#2D6A4F]" />
+          <DashboardStat icon={CheckCircle2} label="Completed" value={completedCount} note="Keep building on what you know" tint="bg-[#F0F5E8] text-[#63823E]" />
+          <DashboardStat icon={Clock3} label="Study time" value={`${hoursThisWeek}h`} note="This week" tint="bg-[#EAF2F5] text-[#45717D]" />
+          <DashboardStat icon={Flame} label="Learning streak" value={`${stats?.streak ?? 0} days`} note="One session at a time" tint="bg-[#FFF3DF] text-[#C27B21]" />
+        </>}
+      </section>
 
-        {/* Center: Donezo Focus Time Tracker */}
-        <div className="lg:col-span-4">
-          <FocusTimer />
-        </div>
-
-        {/* Right: Recent Community Posts Mini Feed (3 items, some anonymous) */}
-        <div className="lg:col-span-4">
-          <div className="rounded-2xl p-6 bg-white border border-gray-100 shadow-sm flex flex-col justify-between h-full">
-            <div>
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h3 className="font-bold text-base text-[#1B1B1B]">Community Feed</h3>
-                  <p className="text-xs text-[#6B7280]">Recent discussions & queries</p>
-                </div>
-                <Link
-                  to="/community"
-                  className="text-xs font-bold text-[#2D6A4F] hover:underline"
-                >
-                  View All
-                </Link>
-              </div>
-
-              <div className="space-y-3.5">
-                {postsLoading &&
-                  Array.from({ length: 3 }).map((_, i) => (
-                    <div key={i} className="space-y-2 animate-pulse">
-                      <div className="h-3 w-3/4 bg-gray-200 rounded" />
-                      <div className="h-3 w-1/2 bg-gray-200 rounded" />
-                    </div>
-                  ))}
-
-                {!postsLoading && postsError && (
-                  <p className="text-xs text-red-500">Failed to load discussions</p>
-                )}
-
-                {!postsLoading && !postsError && (communityPosts?.length ?? 0) === 0 && (
-                  <p className="text-xs text-gray-400 italic">No recent discussions</p>
-                )}
-
-                {!postsLoading &&
-                  !postsError &&
-                  (communityPosts ?? []).map((post) => (
-                    <Link
-                      key={post.id}
-                      to="/community"
-                      className="block p-2 rounded-xl hover:bg-[#F8FAF9] transition-colors"
-                    >
-                      <p className="text-xs font-bold text-gray-900 line-clamp-1">
-                        {post.title || 'منشور'}
-                      </p>
-                      <p className="text-[11px] text-gray-500 mt-0.5">
-                        {post.author?.isAnonymous ? 'طالب' : post.author?.name || 'طالب'} ·{' '}
-                        {post.replyCount} ردود
-                      </p>
-                    </Link>
-                  ))}
-              </div>
-            </div>
-
-            <div className="pt-4 border-t border-gray-100 mt-4">
-              <Link
-                to="/community"
-                className="w-full inline-flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl border border-gray-200 text-xs font-bold text-gray-700 hover:bg-[#F8FAF9] transition-colors"
-              >
-                <MessageSquare className="w-3.5 h-3.5 text-[#2D6A4F]" />
-                <span>Start Discussion</span>
-              </Link>
-            </div>
+      <section className="grid items-start gap-6 xl:grid-cols-[minmax(0,1.55fr)_minmax(300px,0.85fr)]">
+        <div className={`${card} self-start p-5 sm:p-7`}>
+          <div className="flex items-end justify-between gap-4">
+            <div><p className="text-sm font-semibold text-[#2D6A4F]">Pick up where you left off</p><h2 className="mt-1 text-2xl font-bold tracking-tight">Continue learning</h2></div>
+            <Link to="/my-courses" className="inline-flex min-h-11 shrink-0 items-center gap-1.5 text-sm font-semibold text-[#2D6A4F] hover:underline">All courses <ArrowRight size={15} /></Link>
           </div>
+          {isLoading ? <div className="mt-6 h-36 animate-pulse rounded-2xl bg-[#F3F6F4]" /> : inProgress.length ? (
+            <div className="mt-6 grid gap-3 md:grid-cols-2">
+              {inProgress.slice(0, 4).map((course) => <article key={course.id} className="group flex min-w-0 gap-4 rounded-2xl border border-[#E8EEEA] p-3 transition hover:border-[#B7E4C7] hover:bg-[#FBFDFB]">
+                {course.thumbnail ? <img src={course.thumbnail} alt="" loading="lazy" className="h-24 w-24 shrink-0 rounded-xl object-cover" /> : <div className="grid h-24 w-24 shrink-0 place-items-center rounded-xl bg-[#E8F5EC] text-[#2D6A4F]"><BookOpen size={28} /></div>}
+                <div className="flex min-w-0 flex-1 flex-col justify-between py-1">
+                  <div><p className="truncate text-xs font-bold uppercase tracking-wide text-[#557262]">{course.category || 'Course'}</p><h3 className="mt-1 line-clamp-2 text-sm font-bold leading-5 text-[#19372A]">{course.title}</h3><p className="mt-1 truncate text-xs text-[#557262]">{course.instructor.name}</p></div>
+                  <div className="mt-3 flex items-center gap-2"><div className="h-1.5 flex-1 overflow-hidden rounded-full bg-[#E8EEEA]"><div className="h-full rounded-full bg-[#2D6A4F]" style={{ width: `${course.progress}%` }} /></div><span className="text-[11px] font-semibold text-[#557262]">{course.progress}%</span></div>
+                </div>
+                <Link aria-label={`Continue ${course.title}`} to={course.lastLessonId ? `/course/${course.id}/lesson/${course.lastLessonId}` : `/course/${course.id}`} className="my-auto grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[#E8F5EC] text-[#2D6A4F] transition group-hover:bg-[#2D6A4F] group-hover:text-white"><Play size={15} fill="currentColor" /></Link>
+              </article>)}
+            </div>
+          ) : <div className="mt-6 rounded-2xl bg-[#F5F8F6] px-5 py-8 text-center"><BookOpen className="mx-auto h-8 w-8 text-[#557262]" /><h3 className="mt-3 font-semibold">Your course list is ready when you are</h3><p className="mt-1 text-sm text-[#557262]">Explore the catalog and add your first course.</p><Link to="/browse" className="mt-4 inline-flex items-center gap-2 rounded-xl bg-[#2D6A4F] px-4 py-2.5 text-sm font-semibold text-white">Browse courses <ArrowRight size={15} /></Link></div>}
         </div>
-      </div>
+
+        <div className={`${card} flex flex-col p-5 sm:p-7`}>
+          <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold text-[#2D6A4F]">A steady rhythm</p><h2 className="mt-1 text-2xl font-bold tracking-tight">Your progress</h2></div><span className="grid h-10 w-10 place-items-center rounded-2xl bg-[#E8F5EC] text-[#2D6A4F]"><TrendingUp size={19} /></span></div>
+          <div className="mt-7 flex items-center gap-5">
+            <div role="progressbar" aria-label="Average course progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={averageProgress} aria-valuetext={`${averageProgress}% average progress`} className="relative grid h-28 w-28 shrink-0 place-items-center rounded-full" style={{ background: `conic-gradient(#2D6A4F ${averageProgress}%, #E8EEEA 0)` }}><div className="grid h-[5.25rem] w-[5.25rem] place-items-center rounded-full bg-white text-center"><span className="text-xl font-bold">{averageProgress}%</span></div></div>
+            <div><p className="font-semibold">Average course progress</p><p className="mt-1 text-sm leading-5 text-[#557262]">Your learning adds up with every lesson you complete.</p><Link to="/progress" className="mt-3 inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-[#2D6A4F]">View progress <ArrowRight size={14} /></Link></div>
+          </div>
+          <div className="mt-7"><WeeklyChart data={weeklyChartData} /></div>
+        </div>
+      </section>
+
+      <section aria-label="Quick links" className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Link to="/academic" className={`${card} group flex min-h-[76px] cursor-pointer items-center gap-3 p-4 transition hover:-translate-y-0.5 hover:border-[#B7E4C7]`}><span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#E8F5EC] text-[#2D6A4F]"><GraduationCap size={22} /></span><span className="min-w-0 flex-1"><span className="block font-bold">Academic tracks</span><span className="mt-1 block text-sm text-[#557262]">School and university learning</span></span><ArrowRight className="shrink-0 text-[#557262] transition group-hover:translate-x-1 group-hover:text-[#2D6A4F]" size={17} /></Link>
+        <Link to="/ai-tutor" className={`${card} group flex min-h-[76px] cursor-pointer items-center gap-3 p-4 transition hover:-translate-y-0.5 hover:border-[#B7E4C7]`}><span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#F2EEFA] text-[#7654A6]"><Sparkles size={20} /></span><span className="min-w-0 flex-1"><span className="block font-bold">Ask your AI tutor</span><span className="mt-1 block text-sm text-[#557262]">Get help while you study</span></span><ArrowRight className="shrink-0 text-[#557262] transition group-hover:translate-x-1 group-hover:text-[#2D6A4F]" size={17} /></Link>
+        <Link to="/learning-path" className={`${card} group flex min-h-[76px] cursor-pointer items-center gap-3 p-4 transition hover:-translate-y-0.5 hover:border-[#B7E4C7]`}><span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#FFF3DF] text-[#B97922]"><TrendingUp size={20} /></span><span className="min-w-0 flex-1"><span className="block font-bold">Learning Path</span><span className="mt-1 block text-sm text-[#557262]">Plan what you want to learn</span></span><ArrowRight className="shrink-0 text-[#557262] transition group-hover:translate-x-1 group-hover:text-[#2D6A4F]" size={17} /></Link>
+        <Link to="/browse" className={`${card} group flex min-h-[76px] cursor-pointer items-center gap-3 p-4 transition hover:-translate-y-0.5 hover:border-[#B7E4C7]`}><span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-[#EAF2F5] text-[#45717D]"><Compass size={20} /></span><span className="min-w-0 flex-1"><span className="block font-bold">Explore courses</span><span className="mt-1 block text-sm text-[#557262]">Find your next course</span></span><ArrowRight className="shrink-0 text-[#557262] transition group-hover:translate-x-1 group-hover:text-[#2D6A4F]" size={17} /></Link>
+      </section>
+
     </div>
   );
 };

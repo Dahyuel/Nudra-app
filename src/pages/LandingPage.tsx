@@ -1,297 +1,63 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import {
-  Sparkles,
-  Compass,
-  ArrowRight,
-  BookOpen,
-  Users,
-  BrainCircuit,
-  Video,
-  Award,
-  ShieldCheck,
-  CheckCircle,
-  Play,
-  TrendingUp,
-  LayoutGrid
-} from 'lucide-react';
+import { ArrowRight, ArrowUpRight, BookOpen, BrainCircuit, GraduationCap, Languages, Menu, Play, Sparkles, Users, X } from 'lucide-react';
+import { useCourses } from '../hooks/useCourses';
+import './landing-page.css';
+
+const stages = [
+  { title: 'Preparatory school', label: 'E3dady · إعدادي', text: 'Build strong foundations, understand your subjects, and discover how you learn best.', to: '/academic/school', icon: BookOpen, tone: 'mint', detail: 'Start with a strong foundation' },
+  { title: 'Secondary school', label: 'Thanaweya · ثانوي', text: 'Make sense of the curriculum, practice with purpose, and prepare for your next big step.', to: '/academic/school', icon: GraduationCap, tone: 'peach', detail: 'Turn understanding into confidence' },
+  { title: 'University', label: 'Your next chapter', text: 'Go deeper into your field and connect what you study with what you want to do.', to: '/academic/university', icon: BrainCircuit, tone: 'lavender', detail: 'Explore your field and your future' },
+  { title: 'Skills for life', label: 'Keep becoming', text: 'Learn a language, explore technology, or build a new skill. Your growth has no finish line.', to: '/browse', icon: Sparkles, tone: 'yellow', detail: 'Grow beyond the classroom' },
+];
+const steps = [
+  { title: 'Find your starting point', text: 'Your school stage, your university field, or a skill you’ve always wanted to try. Start where you are.', image: 'starting', label: 'A little curiosity', icon: BookOpen },
+  { title: 'Make learning your own', text: 'Clear lessons, practice, and AI support in Arabic and English. Find a rhythm that works for you.', image: 'learning', label: 'Your pace. Your space.', icon: BrainCircuit },
+  { title: 'Grow into what’s next', text: 'From one school year to the next, and from your first lecture to your next ambition. Keep moving with Nudra.', image: 'growing', label: 'On to your next chapter', icon: Sparkles },
+];
+const learnerGroups = [
+  { name: 'School learners', detail: 'Strong foundations', icon: BookOpen },
+  { name: 'Secondary students', detail: 'Bigger ambitions', icon: GraduationCap },
+  { name: 'University learners', detail: 'New perspectives', icon: BrainCircuit },
+  { name: 'Lifelong learners', detail: 'Endless curiosity', icon: Sparkles },
+  { name: 'Knowledge sharers', detail: 'A shared future', icon: Users },
+];
 
 export const LandingPage: React.FC = () => {
-  return (
-    <div className="min-h-screen bg-[#F8FAF9] text-[#1B1B1B] flex flex-col justify-between selection:bg-[#B7E4C7] selection:text-[#2D6A4F]">
-      {/* Top Navigation Bar */}
-      <header className="sticky top-4 z-30 w-3/4 mx-auto bg-white/80 backdrop-blur-md border border-gray-100 rounded-2xl shadow-sm">
-        <div className="px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
-          {/* Brand */}
-          <Link to="/" className="flex items-center gap-2">
-            <img src="/favicon.png" alt="Nudra" className="h-12 w-12 object-contain" />
-            <img src="/nudra-text-logo.png" alt="Nudra" className="h-12 w-auto" />
-          </Link>
-
-          {/* Nav links */}
-          <nav className="hidden md:flex items-center gap-8 text-sm font-semibold text-gray-600">
-            <Link to="/browse" className="hover:text-[#2D6A4F] transition-colors">
-              Explore Courses
-            </Link>
-            <Link to="/academic" className="hover:text-[#2D6A4F] transition-colors">
-              Academic
-            </Link>
-            <Link to="/organizations" className="hover:text-[#2D6A4F] transition-colors">
-              Organizations
-            </Link>
-            <Link to="/community" className="hover:text-[#2D6A4F] transition-colors">
-              Community
-            </Link>
-            <Link to="/ai-tutor" className="hover:text-[#2D6A4F] transition-colors">
-              AI Tutor
-            </Link>
-            <Link to="/teach" className="text-emerald-700 hover:text-[#2D6A4F] font-bold transition-colors">
-              Teach on Nudra
-            </Link>
-          </nav>
-
-          {/* CTA Buttons */}
-          <div className="flex items-center gap-3">
-            <Link
-              to="/login"
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#2D6A4F] hover:bg-[#23533e] text-white text-xs sm:text-sm font-bold shadow-sm hover:shadow transition-all"
-            >
-              <span>Get Started</span>
-            </Link>
-          </div>
-        </div>
+  const [menuOpen, setMenuOpen] = useState(false);
+  const { courses, isLoading, error } = useCourses({ category: 'All' });
+  return <div className="nudra-landing">
+    <a className="nl-skip" href="#main-content">Skip to content</a>
+    <div className="nl-hero-shell">
+      <header className="nl-header nl-container">
+        <Link to="/" className="nl-brand" aria-label="Nudra home"><img src="/favicon.png" alt="" width="36" height="36" /><span>nudra<span className="nl-brand-dot">.</span></span></Link>
+        <nav className="nl-desktop-nav" aria-label="Main navigation"><a href="#explore">Your learning journey</a><Link to="/academic">Academic</Link><a href="#experience">Why Nudra</a><Link to="/teach">Become an instructor <ArrowUpRight size={14} aria-hidden="true" /></Link></nav>
+        <div className="nl-header-actions"><Link to="/login" className="nl-login">Log in</Link><Link to="/register" className="nl-button nl-button-lime nl-header-cta">Start learning <ArrowUpRight size={16} aria-hidden="true" /></Link><button className="nl-menu-button" onClick={() => setMenuOpen(!menuOpen)} aria-expanded={menuOpen} aria-controls="nl-mobile-nav" aria-label={menuOpen ? 'Close menu' : 'Open menu'}>{menuOpen ? <X /> : <Menu />}</button></div>
       </header>
-
-      {/* Hero Section */}
-      <main className="flex-1">
-        <section className="pt-16 pb-20 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto text-center">
-          {/* Subtle announcement pill */}
-          <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-[#B7E4C7]/40 text-[#2D6A4F] text-xs font-bold mb-6 border border-[#B7E4C7]/60">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Next-Gen Bilingual Learning Ecosystem • ندرة</span>
-          </div>
-
-          {/* Headline */}
-          <h1 className="text-4xl sm:text-6xl font-black tracking-tight text-[#1B1B1B] max-w-4xl mx-auto leading-[1.15]">
-            Master In-Demand Skills with Precision & Clarity.
-          </h1>
-
-          {/* Subtitle */}
-          <p className="mt-6 text-base sm:text-lg text-[#6B7280] max-w-2xl mx-auto leading-relaxed font-medium">
-            Nudra combines structured expert curricula, instant bilingual AI tutoring, and an interactive student workspace modeled after high-productivity tools.
-          </p>
-
-          {/* CTA Buttons (Get Started / Browse Courses) */}
-          <div className="mt-8 flex flex-col sm:flex-row items-center justify-center gap-4">
-            <Link
-              to="/dashboard"
-              className="w-full sm:w-auto inline-flex items-center justify-center gap-2.5 px-8 py-3.5 rounded-xl bg-[#2D6A4F] hover:bg-[#23533e] text-white text-sm font-bold shadow-md hover:shadow-lg transition-all"
-            >
-              <span>Get Started</span>
-              <ArrowRight className="w-4 h-4" />
-            </Link>
-            <Link
-              to="/browse"
-              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-8 py-3.5 rounded-xl bg-white hover:bg-gray-50 border border-gray-200 text-[#1B1B1B] text-sm font-bold shadow-sm transition-all"
-            >
-              <Compass className="w-4 h-4 text-[#2D6A4F]" />
-              <span>Browse Courses</span>
-            </Link>
-          </div>
-
-          {/* Quick Metrics Bar */}
-          <div className="mt-12 pt-8 border-t border-gray-200/60 grid grid-cols-2 md:grid-cols-4 gap-6 max-w-3xl mx-auto">
-            <div>
-              <p className="text-2xl sm:text-3xl font-black text-[#1B1B1B]">24,000+</p>
-              <p className="text-xs font-semibold text-gray-500 mt-0.5">Active Learners</p>
-            </div>
-            <div>
-              <p className="text-2xl sm:text-3xl font-black text-[#2D6A4F]">94.8%</p>
-              <p className="text-xs font-semibold text-gray-500 mt-0.5">Completion Rate</p>
-            </div>
-            <div>
-              <p className="text-2xl sm:text-3xl font-black text-[#1B1B1B]">180+</p>
-              <p className="text-xs font-semibold text-gray-500 mt-0.5">Curated Courses</p>
-            </div>
-            <div>
-              <p className="text-2xl sm:text-3xl font-black text-[#52B788]">4.9 ★</p>
-              <p className="text-xs font-semibold text-gray-500 mt-0.5">Average Rating</p>
-            </div>
-          </div>
-
-          {/* Product Preview Card (Donezo Interface Teaser) */}
-          <div className="mt-14 max-w-5xl mx-auto">
-            <div className="rounded-3xl p-3 sm:p-5 bg-white border border-gray-200/80 shadow-xl overflow-hidden text-left">
-              <div className="flex items-center justify-between pb-3 mb-3 border-b border-gray-100 px-2">
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full bg-red-400"></div>
-                  <div className="w-3 h-3 rounded-full bg-amber-400"></div>
-                  <div className="w-3 h-3 rounded-full bg-emerald-400"></div>
-                  <span className="ml-2 text-xs font-semibold text-gray-400">
-                    Nudra Student Dashboard — Preview
-                  </span>
-                </div>
-                <Link
-                  to="/dashboard"
-                  className="text-xs font-bold text-[#2D6A4F] hover:underline flex items-center gap-1"
-                >
-                  <span>Launch Live App</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </Link>
-              </div>
-
-              {/* Teaser Preview Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-[#F8FAF9] p-4 rounded-2xl">
-                {/* Mini Stat Card 1 */}
-                <div className="rounded-2xl p-5 bg-[#2D6A4F] text-white">
-                  <p className="text-xs text-emerald-100 font-medium">Enrolled Courses</p>
-                  <p className="text-3xl font-black mt-2">24</p>
-                  <span className="inline-block mt-2 text-[10px] bg-white/10 px-2 py-0.5 rounded-full text-emerald-200">
-                    +5% from last month
-                  </span>
-                </div>
-
-                {/* Mini Stat Card 2 */}
-                <div className="rounded-2xl p-5 bg-white border border-gray-100 shadow-2xs">
-                  <p className="text-xs text-gray-500 font-medium">Current Streak</p>
-                  <p className="text-3xl font-black text-gray-900 mt-2">14 Days</p>
-                  <span className="inline-block mt-2 text-[10px] text-[#2D6A4F] font-bold">
-                    🔥 Daily Streak Active
-                  </span>
-                </div>
-
-                {/* Mini Stat Card 3 */}
-                <div className="rounded-2xl p-5 bg-white border border-gray-100 shadow-2xs">
-                  <p className="text-xs text-gray-500 font-medium">Weekly Study Commitment</p>
-                  <p className="text-3xl font-black text-gray-900 mt-2">                  30+ hrs</p>
-                  <span className="inline-block mt-2 text-[10px] text-gray-500 font-bold">
-                    7 Days Tracked
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        {/* 3 Feature Highlights Below (as explicitly required) */}
-        <section className="py-16 bg-white border-y border-gray-100">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="text-center max-w-2xl mx-auto mb-12">
-              <span className="text-xs font-bold uppercase tracking-wider text-[#2D6A4F] bg-[#B7E4C7]/30 px-3 py-1 rounded-full">
-                Core Advantages
-              </span>
-              <h2 className="text-2xl sm:text-3xl font-extrabold text-[#1B1B1B] mt-3">
-                Why Ambitious Students Thrive with Nudra
-              </h2>
-              <p className="text-xs sm:text-sm text-[#6B7280] mt-2">
-                Designed from the ground up for high-velocity learning without cognitive clutter.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-              {/* Feature 1 */}
-              <div className="rounded-2xl p-6 bg-[#F8FAF9] border border-gray-100/80 shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow">
-                <div>
-                  <div className="w-12 h-12 rounded-xl bg-white border border-gray-100 flex items-center justify-center text-[#2D6A4F] shadow-2xs mb-5">
-                    <BrainCircuit className="w-6 h-6" />
-                  </div>
-                  <h3 className="text-lg font-bold text-[#1B1B1B] mb-2">
-                    Adaptive AI Tutor & Socratic Prompts
-                  </h3>
-                  <p className="text-xs sm:text-sm text-[#6B7280] leading-relaxed">
-                    Get instant bilingual concept breakdowns, automated code debugging, and tailored practice quizzes 24/7 in both Arabic and English.
-                  </p>
-                </div>
-                <div className="mt-6 pt-4 border-t border-gray-200/50">
-                  <Link
-                    to="/ai-tutor"
-                    className="text-xs font-bold text-[#2D6A4F] hover:underline inline-flex items-center gap-1"
-                  >
-                    <span>Try AI Tutor</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </Link>
-                </div>
-              </div>
-
-              {/* Feature 2 */}
-              <div className="rounded-2xl p-6 bg-[#F8FAF9] border border-gray-100/80 shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow">
-                <div>
-                  <div className="w-12 h-12 rounded-xl bg-white border border-gray-100 flex items-center justify-center text-[#2D6A4F] shadow-2xs mb-5">
-                    <Video className="w-6 h-6" />
-                  </div>
-                  <h3 className="text-lg font-bold text-[#1B1B1B] mb-2">
-                    Live Mentorship & Code Critiques
-                  </h3>
-                  <p className="text-xs sm:text-sm text-[#6B7280] leading-relaxed">
-                    Engage in live weekly sessions with senior industry engineers, UI design directors, and AI researchers with direct screen sharing.
-                  </p>
-                </div>
-                <div className="mt-6 pt-4 border-t border-gray-200/50">
-                  <Link
-                    to="/dashboard"
-                    className="text-xs font-bold text-[#2D6A4F] hover:underline inline-flex items-center gap-1"
-                  >
-                    <span>View Upcoming Sessions</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </Link>
-                </div>
-              </div>
-
-              {/* Feature 3 */}
-              <div className="rounded-2xl p-6 bg-[#F8FAF9] border border-gray-100/80 shadow-sm flex flex-col justify-between hover:shadow-md transition-shadow">
-                <div>
-                  <div className="w-12 h-12 rounded-xl bg-white border border-gray-100 flex items-center justify-center text-[#2D6A4F] shadow-2xs mb-5">
-                    <Users className="w-6 h-6" />
-                  </div>
-                  <h3 className="text-lg font-bold text-[#1B1B1B] mb-2">
-                    Peer Community & Anonymous Help
-                  </h3>
-                  <p className="text-xs sm:text-sm text-[#6B7280] leading-relaxed">
-                    Ask questions without anxiety using built-in anonymous mode, collaborate on open-source repositories, and earn peer endorsements.
-                  </p>
-                </div>
-                <div className="mt-6 pt-4 border-t border-gray-200/50">
-                  <Link
-                    to="/community"
-                    className="text-xs font-bold text-[#2D6A4F] hover:underline inline-flex items-center gap-1"
-                  >
-                    <span>Explore Discussions</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </Link>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
-      </main>
-
-      {/* Footer */}
-      <footer className="bg-white border-t border-gray-100 py-10 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full border-2 border-[#2D6A4F] flex items-center justify-center p-1 bg-emerald-50/50">
-              <div className="w-4 h-4 rounded-full bg-[#2D6A4F]" />
-            </div>
-            <span className="font-bold text-base text-[#1B1B1B]">Nudra (ندرة)</span>
-          </div>
-
-          <p className="text-xs text-[#6B7280]">
-            © {new Date().getFullYear()} Nudra EdTech Platform. Inspired by Donezo design aesthetics.
-          </p>
-
-          <div className="flex items-center gap-4 text-xs font-semibold text-gray-500">
-            <Link to="/dashboard" className="hover:text-[#2D6A4F]">
-              Dashboard
-            </Link>
-            <Link to="/browse" className="hover:text-[#2D6A4F]">
-              Courses
-            </Link>
-            <Link to="/community" className="hover:text-[#2D6A4F]">
-              Community
-            </Link>
-          </div>
-        </div>
-      </footer>
+      {menuOpen && <nav className="nl-mobile-nav nl-container" id="nl-mobile-nav" aria-label="Mobile navigation"><a href="#explore" onClick={() => setMenuOpen(false)}>Your learning journey</a><Link to="/academic">Academic</Link><a href="#experience" onClick={() => setMenuOpen(false)}>Why Nudra</a><Link to="/teach">Become an instructor</Link><Link to="/register">Start learning <ArrowRight size={16} /></Link></nav>}
+      <section className="nl-hero nl-container" aria-labelledby="hero-title">
+        <div className="nl-hero-copy"><span className="nl-eyebrow nl-eyebrow-light"><span className="nl-small-dot" /> From your first foundations. To your next ambition.</span><h1 id="hero-title">Every chapter.<br />A new chance<br />to <span>grow.</span></h1><p>From preparatory school to secondary, university, and the skills life calls for — find your next step with Nudra. A learning space that grows with you, in Arabic and English.</p><div className="nl-hero-actions"><a href="#explore" className="nl-button nl-button-lime">Find your next step <ArrowUpRight size={19} aria-hidden="true" /></a><a className="nl-watch-link" href="#experience"><span><Play size={14} fill="currentColor" aria-hidden="true" /></span>Meet your learning space</a></div><div className="nl-hero-footnote"><GraduationCap size={19} aria-hidden="true" /><span>School. University. Life. <strong>With you, all the way.</strong></span></div></div>
+        <div className="nl-hero-visual"><div className="nl-orbit" aria-hidden="true" /><div className="nl-hero-disc" aria-hidden="true" /><span className="nl-decor nl-decor-star" aria-hidden="true"><Sparkles size={30} /></span><span className="nl-decor nl-decor-book" aria-hidden="true"><BookOpen size={25} /></span><img className="nl-hero-person" src="/images/landing/hero-learner.png" alt="A smiling learner holding a laptop" width="1312" height="1199" fetchPriority="high" /><div className="nl-language-tag"><Languages size={17} aria-hidden="true" /> English & العربية</div></div>
+      </section>
     </div>
-  );
+    <main id="main-content">
+      <section className="nl-trust" aria-labelledby="trust-title"><div className="nl-container nl-trust-heading"><span className="nl-eyebrow">A SHARED LOVE OF LEARNING</span><h2 id="trust-title">Trusted by many.<br /><span>Made for every chapter.</span></h2><p>A place for students, curious minds, and the people who help them grow.</p></div><div className="nl-marquee"><div className="nl-marquee-track">{[0, 1].map(copy => <div className="nl-marquee-group" key={copy} aria-hidden={copy === 1 ? true : undefined}>{learnerGroups.map(group => <div className="nl-trust-item" key={group.name} tabIndex={copy === 0 ? 0 : -1}><group.icon size={32} strokeWidth={1.4} aria-hidden="true" /><div><strong>{group.name}</strong><span>{group.detail}</span></div></div>)}</div>)}</div></div></section>
+      <section className="nl-section nl-container" aria-labelledby="journey-title"><div className="nl-section-heading"><div><span className="nl-eyebrow">SMALL STEPS. REAL PROGRESS.</span><h2 id="journey-title">Start where you are.<br />See how far you can go.</h2></div><div className="nl-journey-aside"><p>You bring the curiosity.<br />We’ll help you find your way.</p></div></div><div className="nl-steps">{steps.map((step, i) => <article key={step.title}><div className={`nl-step-art nl-step-art-${i}`}><div className="nl-step-halo" aria-hidden="true" /><img src={`/images/landing/step-${step.image}.png`} alt="" width="1024" height="1536" loading="lazy" /><span className="nl-step-art-label">{step.label}</span></div><div className="nl-step-line"><span>0{i + 1}</span><div /></div><h3>{step.title}</h3><p>{step.text}</p></article>)}</div></section>
+      <section className="nl-explore nl-section" id="explore" aria-labelledby="explore-title">
+        <div className="nl-container"><div className="nl-section-heading"><div><span className="nl-eyebrow">ONE JOURNEY. SO MANY POSSIBILITIES.</span><h2 id="explore-title">A learning companion.<br /><span>For every version of you.</span></h2></div><p>From E3dady to whatever comes next.<br />Your path changes. Your curiosity stays.</p></div>
+          <ol className="nl-roadmap">{stages.map((stage, i) => <li className={`nl-roadmap-stage nl-roadmap-${stage.tone}`} key={stage.title}><div className="nl-roadmap-milestone"><span>0{i + 1}</span><ArrowRight size={18} aria-hidden="true" /></div><Link to={stage.to}><div className="nl-roadmap-icon"><stage.icon size={38} strokeWidth={1.4} aria-hidden="true" /></div><span className="nl-roadmap-label">{stage.label}</span><h3>{stage.title}</h3><p>{stage.text}</p><span className="nl-roadmap-link">{stage.detail}<ArrowUpRight size={18} aria-hidden="true" /></span></Link></li>)}</ol>
+          <div className="nl-skills-ribbon"><Sparkles size={23} aria-hidden="true" /><p><strong>Skills don’t wait for graduation.</strong> Explore languages, design, technology, and more — alongside every stage.</p><Link to="/browse" className="nl-text-link">Explore skills <ArrowUpRight size={18} aria-hidden="true" /></Link></div>
+
+        </div>
+      </section>
+      <section className="nl-course-discovery nl-section" id="courses" aria-labelledby="courses-title"><div className="nl-container">
+          <div className="nl-library-heading"><div><span className="nl-eyebrow">KEEP YOUR CURIOSITY ALIVE</span><h2 id="courses-title">Your next skill.<br />Your next possibility.</h2><p>Follow a new interest, go deeper into your field, or try something just for you.</p></div><Link to="/browse" className="nl-text-link">Explore all courses <ArrowUpRight size={18} aria-hidden="true" /></Link></div>{courses.length > 0 && <div className="nl-course-grid">{courses.slice(0, 3).map(course => <Link className="nl-course" to={`/course/${course.id}`} key={course.id}>{course.thumbnail && <img src={course.thumbnail} alt="" loading="lazy" />}<span>{course.category} · {course.level}</span><h3>{course.title}</h3><p>{course.instructor.name}</p><div><span>{course.lessonsCount} lessons</span><strong>{course.price === 0 ? 'Free' : `${course.price.toLocaleString()} EGP`}</strong></div></Link>)}</div>}
+          {isLoading && <p className="nl-library-status" role="status">Loading the course library…</p>}{(error || (!isLoading && courses.length === 0)) && <p className="nl-library-status">Find your starting point in the <Link to="/browse">course library</Link>.</p>}
+      </div></section>
+      <section className="nl-section nl-container nl-experience" id="experience" aria-labelledby="experience-title"><div className="nl-experience-visual"><img src="/images/landing/study-together.webp" alt="Two learners working together at a laptop in a sunlit library" width="1536" height="1024" loading="lazy" /><div className="nl-study-caption"><span><Sparkles size={20} aria-hidden="true" /></span><div><strong>A little support goes a long way.</strong><p>Learn independently. Grow together.</p></div></div></div><div className="nl-experience-copy"><span className="nl-eyebrow">MORE THAN A COURSE</span><h2 id="experience-title">Your stage changes.<br /><span>Your support stays.</span></h2><p>New subjects, new challenges, new ambitions. Keep your lessons, practice, and learning community in one familiar place.</p>{[{ icon: BrainCircuit, title: 'A tutor that speaks your language', text: 'Work through tricky concepts with AI support in Arabic and English.' }, { icon: GraduationCap, title: 'A path that grows with you', text: 'Move from school foundations to university learning and skills beyond the classroom.' }, { icon: Users, title: 'Room to ask. People to grow with.', text: 'Find your community, share questions, and learn alongside others.' }].map(feature => <div className="nl-feature" key={feature.title}><feature.icon aria-hidden="true" /><div><h3>{feature.title}</h3><p>{feature.text}</p></div></div>)}<Link to="/register" className="nl-text-link">Step inside Nudra <ArrowUpRight size={20} aria-hidden="true" /></Link></div></section>
+      <section className="nl-learning-studio nl-container" aria-labelledby="studio-title"><div className="nl-studio-copy"><span className="nl-eyebrow">UNDERSTAND IT. TRY IT. MAKE IT YOURS.</span><h2 id="studio-title">More than getting<br />the right <span>answer.</span></h2><p>Build the confidence to ask why. Bring your lessons, questions, and practice together — wherever you are in your learning journey.</p><Link to="/academic" className="nl-button nl-button-lime">Find your learning space <ArrowUpRight size={18} aria-hidden="true" /></Link><Link to="/teach" className="nl-studio-teach">Have something to share? Teach with Nudra <ArrowUpRight size={16} aria-hidden="true" /></Link></div><div className="nl-studio-visual"><img className="nl-studio-illustration" src="/images/landing/study-illustration.png" alt="An open notebook, stacked books, a pencil, and a glowing idea bulb" width="1024" height="1024" loading="lazy" /></div></section>
+      <section className="nl-cta nl-container"><span className="nl-eyebrow">YOUR NEXT CHAPTER IS STILL UNWRITTEN.</span><h2>Keep learning.<br />Keep becoming <span>you.</span></h2><p>From your first foundations to your next ambition. Take the next step with Nudra.</p><Link to="/register" className="nl-button nl-button-lime">Let’s start learning <ArrowUpRight size={19} aria-hidden="true" /></Link><Sparkles className="nl-cta-star" size={80} strokeWidth={1} aria-hidden="true" /></section>
+    </main>
+    <footer className="nl-footer"><div className="nl-container nl-footer-top"><div><Link to="/" className="nl-brand"><img src="/favicon.png" alt="" width="36" height="36" /><span>nudra<span className="nl-brand-dot">.</span></span></Link><p>For every stage. For everything you can become.</p></div><div><h3>Discover</h3><Link to="/browse">Courses</Link><Link to="/academic">Academic learning</Link><Link to="/organizations">Organizations</Link></div><div><h3>Grow with us</h3><Link to="/teach">Become an instructor</Link><Link to="/community">Community</Link><Link to="/register">Join Nudra</Link></div><div><h3>A little help</h3><Link to="/help">Help & support</Link><Link to="/login">Your account</Link><a href="#experience">Why Nudra</a></div></div><div className="nl-container nl-footer-bottom"><span>© {new Date().getFullYear()} Nudra. Keep your curiosity alive.</span><span>Made for your next chapter. <ArrowUpRight size={14} aria-hidden="true" /></span></div></footer>
+  </div>;
 };

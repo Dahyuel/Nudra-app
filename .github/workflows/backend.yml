@@ -1,0 +1,87 @@
+name: Backend and deployment checks
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: postgresql://postgres:qa-disposable-only@127.0.0.1:15433/nudra_test
+      REDIS_URL: redis://127.0.0.1:16380
+      MINIO_ENDPOINT: 127.0.0.1
+      MINIO_PORT: 19001
+      MINIO_ACCESS_KEY: qa-minio
+      MINIO_SECRET_KEY: qa-disposable-only
+      API_URL: http://127.0.0.1:13003
+      PORT: 13003
+      PAYMENT_PROVIDER: paymob_mock
+      ALLOWED_ORIGINS: http://localhost:3000
+      BASE_DOMAIN: nudra.example
+      DOMAIN_AUTH_SHARED_SECRET: qa-domain-disposable-only-123456789012
+      EMAIL_OUTBOX_KEY: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      NUDRA_DISPOSABLE_TESTS: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            backend/package-lock.json
+      - run: npm ci && npm --prefix backend ci
+      - run: npm run lint && npm run build && npm --prefix backend run build
+      - run: node ops/validate-production-compose.mjs
+      - run: docker compose -f compose.test.yml up -d --build --wait
+      - run: npm --prefix backend run db:migrate && npm --prefix backend run db:migrate
+      - name: Integration and security regressions
+        run: |
+          cd backend
+          node dist/index.js > /tmp/nudra-api.log 2>&1 &
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent "$API_URL/api/health/ready"; then break; fi
+            sleep 2
+          done
+          npm run test:integration
+      - name: Production image builds
+        run: |
+          docker build -f backend/Dockerfile -t nudra-api:ci backend
+          docker build -f Dockerfile -t nudra-frontend:ci .
+          docker build -f infra/domain-auth.Dockerfile -t nudra-domain-auth:ci .
+      - name: Application production dependency advisories
+        run: npm audit --omit=dev && npm --prefix backend audit --omit=dev
+      - name: API image security scan
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: nudra-api:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Frontend image security scan
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: nudra-frontend:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Domain authorization image security scan
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: nudra-domain-auth:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Storage client image security scan
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: pgsty/silo@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Cleanup and diagnostics
+        if: always()
+        run: |
+          cat /tmp/nudra-api.log 2>/dev/null || true
+          docker compose -f compose.test.yml logs --tail=50
+          docker compose -f compose.test.yml down --volumes

@@ -1,9 +1,11 @@
+import { lessonAccess } from '../lib/access';
 import { Router, Request, Response } from 'express';
 import { eq, and } from 'drizzle-orm';
 import rateLimit from 'express-rate-limit';
 import { db } from '../db';
 import { lessons, courses, enrollments, orgMemberships } from '../db/schema';
 import { requireAuth } from '../middleware/requireAuth';
+import { createRedisRateLimitStore } from '../middleware/rateLimit';
 import { r2Client, HLS_BUCKET, getHlsPlaylistKey, getHlsObjectPrefix, storage } from '../lib/minio';
 
 const router = Router();
@@ -14,66 +16,20 @@ const PLAYLIST_RE = /^index\.m3u8$/i;
 const videoRateLimiter = rateLimit({
   windowMs: Number(process.env.VIDEO_RATE_LIMIT_WINDOW_MS || 60 * 1000),
   max: Number(process.env.VIDEO_RATE_LIMIT_MAX || 300),
+  keyGenerator: req => req.user!.id,
+  store: createRedisRateLimitStore('nudra:media:user'),
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: 'Too many video requests, please try again later' },
 });
 
-router.use(videoRateLimiter);
+router.use(requireAuth, videoRateLimiter);
 
-async function verifyLessonAccess(
-  lessonId: string,
-  userId: string,
-  role: string,
-  organizationId?: string
-): Promise<{ allowed: boolean; status?: number; message?: string }> {
-  const lessonRows = await db.select().from(lessons).where(eq(lessons.id, lessonId)).limit(1);
-  if (lessonRows.length === 0) {
-    return { allowed: false, status: 404, message: 'Lesson not found' };
-  }
-
-  const lesson = lessonRows[0];
-
-  if (lesson.courseId) {
-    const [course] = await db.select({ organizationId: courses.organizationId, instructorId: courses.instructorId })
-      .from(courses).where(eq(courses.id, lesson.courseId)).limit(1);
-    if (!course || (organizationId ? course.organizationId !== organizationId : course.organizationId !== null)) {
-      return { allowed: false, status: 404, message: 'Lesson not found' };
-    }
-    if (organizationId) {
-      const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships).where(and(
-        eq(orgMemberships.orgId, organizationId), eq(orgMemberships.userId, userId), eq(orgMemberships.status, 'active')
-      )).limit(1);
-      if (!membership) return { allowed: false, status: 403, message: 'Organization membership is required.' };
-    }
-  }
-
-  if (role === 'instructor' && lesson.courseId) {
-    const courseRows = await db.select().from(courses).where(eq(courses.id, lesson.courseId)).limit(1);
-    if (courseRows.length > 0 && courseRows[0].instructorId === userId) {
-      return { allowed: true };
-    }
-  }
-
-  if (lesson.isFree) {
-    return { allowed: true };
-  }
-
-  if (lesson.courseId) {
-    const enr = await db
-      .select()
-      .from(enrollments)
-      .where(and(eq(enrollments.studentId, userId), eq(enrollments.courseId, lesson.courseId)))
-      .limit(1);
-    if (enr.length > 0) {
-      return { allowed: true };
-    }
-  }
-
-  return { allowed: false, status: 403, message: 'Access denied' };
+async function verifyLessonAccess(lessonId: string, userId: string, role: string, organizationId?: string) {
+  return lessonAccess(lessonId, userId, role, organizationId ?? null);
 }
 
-router.get('/:lessonId/playlist.m3u8', requireAuth, async (req: Request, res: Response) => {
+router.get('/:lessonId/playlist.m3u8', async (req: Request, res: Response) => {
   try {
     const { lessonId } = req.params;
     const userId = req.user!.id;
@@ -84,16 +40,19 @@ router.get('/:lessonId/playlist.m3u8', requireAuth, async (req: Request, res: Re
       return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
     }
 
-    const playlistKey = getHlsPlaylistKey(lessonId);
+    const playlistKey = access.lesson?.videoUrl ?? getHlsPlaylistKey(lessonId);
     const stream = await storage.getObject(HLS_BUCKET, playlistKey);
 
     let body = '';
+    res.once('close',() => {if (!res.writableEnded) stream.destroy();});
     stream.on('data', (chunk) => {
       body += chunk;
+      if (body.length > 1048576) stream.destroy(new Error('Playlist too large'));
     });
 
     stream.on('end', () => {
-      const baseUrl = `/api/videos/${lessonId}/`;
+      const generation = playlistKey.split('/').length === 4 ? playlistKey.split('/')[2] : '';
+      const baseUrl = `/api/videos/${lessonId}/${generation ? generation + '/' : ''}`;
       const rewritten = body
         .split('\n')
         .map((line) => {
@@ -114,7 +73,7 @@ router.get('/:lessonId/playlist.m3u8', requireAuth, async (req: Request, res: Re
       console.error('playlist fetch error', err);
       if (!res.headersSent) {
         return res.status(500).json({ message: 'Internal server error' });
-      }
+      } else {res.destroy(err);}
     });
   } catch (err) {
     if ((err as { code?: string })?.code === 'NoSuchKey') {
@@ -127,7 +86,7 @@ router.get('/:lessonId/playlist.m3u8', requireAuth, async (req: Request, res: Re
 
 // Must stay below the playlist route: this pattern also matches "playlist.m3u8".
 
-router.get('/:lessonId/:filename', requireAuth, async (req: Request, res: Response) => {
+router.get(['/:lessonId/:filename','/:lessonId/:generation/:filename'], async (req: Request, res: Response) => {
   try {
     const { lessonId, filename } = req.params;
     const userId = req.user!.id;
@@ -142,20 +101,25 @@ router.get('/:lessonId/:filename', requireAuth, async (req: Request, res: Respon
       return res.status(access.status || 403).json({ message: access.message || 'Access denied' });
     }
 
-    const objectName = `${getHlsObjectPrefix(lessonId)}${filename}`;
+    const playlistKey = access.lesson?.videoUrl ?? getHlsPlaylistKey(lessonId);
+    const prefix = playlistKey.slice(0,playlistKey.lastIndexOf('/')+1);
+    const generation = playlistKey.split('/').length === 4 ? playlistKey.split('/')[2] : undefined;
+    if (req.params.generation !== generation) return res.status(404).json({message:'Video generation not found'});
+    const objectName = `${prefix}${filename}`;
 
     const stream = await storage.getObject(HLS_BUCKET, objectName);
     const contentType = filename.endsWith('.m3u8') ? 'application/x-mpegURL' : 'video/MP2T';
 
     res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'private, no-store, no-cache, must-revalidate');
+    res.once('close',() => {if (!res.writableEnded) stream.destroy();});
     stream.pipe(res);
 
     stream.on('error', (err) => {
       console.error('segment stream error', err);
       if (!res.headersSent) {
         return res.status(500).json({ message: 'Internal server error' });
-      }
+      } else res.destroy(err);
     });
   } catch (err) {
     console.error('video stream error', err);

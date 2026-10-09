@@ -23,7 +23,7 @@ services:
       - redis_data:/data
 
   minio:
-    image: elestio/minio
+    image: pgsty/silo@sha256:635197cb9f36d01bee221d34d1c7d7960f6a95c48b0b6c01d99cd13bdae51a46
     container_name: nudra-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"

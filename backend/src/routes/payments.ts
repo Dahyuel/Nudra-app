@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { db } from '../db';
 import { courses, enrollments, orders } from '../db/schema';
 import { requireAuth } from '../middleware/requireAuth';
-import { createOrder, finalizeOrder, getPaymentProvider, isTestPaymentsEnabled } from '../lib/payments';
+import { createOrder, finalizeOrder, getPaymentProvider, isTestPaymentsEnabled, canSimulatePayment } from '../lib/payments';
 
 const router = Router();
 router.use(requireAuth);
@@ -42,13 +42,14 @@ router.post('/checkout', async (req: Request, res: Response) => {
     }
 
     const studentId = req.user!.id;
+    if (['test','paymob_mock'].includes(provider.name) && !canSimulatePayment(req.user!.email)) return res.status(403).json({message:'This account is not authorized for demo checkout.'});
     if (course.instructorId === studentId) {
       return res.status(400).json({ message: "You can't buy your own course." });
     }
     const already = await db
       .select({ id: enrollments.id })
       .from(enrollments)
-      .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, course.id)))
+      .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, course.id),eq(enrollments.status,'active')))
       .limit(1);
     if (already.length > 0) return res.status(409).json({ message: 'You are already enrolled in this course.' });
 
@@ -75,7 +76,9 @@ router.get('/orders/:id', async (req: Request, res: Response) => {
       .where(and(eq(orders.id, id.data), isNull(courses.organizationId)))
       .limit(1);
     if (!row || row.order.studentId !== req.user!.id) return res.status(404).json({ message: 'Order not found' });
-    return res.json({ order: publicOrder(row.order, row.courseTitle), testMode: row.order.provider === 'test' });
+    let order=row.order;
+    if (order.status==='pending' && Date.now()-order.createdAt.getTime()>30*60*1000 && ['test','paymob_mock'].includes(order.provider)) order=(await finalizeOrder(order.id,'expired'))!;
+    return res.json({order:publicOrder(order,row.courseTitle),testMode:['test','paymob_mock'].includes(order.provider)});
   } catch (err) {
     console.error('get order error', err);
     return res.status(500).json({ message: 'Internal server error' });
@@ -84,11 +87,11 @@ router.get('/orders/:id', async (req: Request, res: Response) => {
 
 // Test provider only: simulates the gateway confirming or declining a payment.
 // Disabled unless PAYMENT_PROVIDER=test and NODE_ENV is not production.
-router.post('/test/:id/complete', async (req: Request, res: Response) => {
+router.post(['/test/:id/complete','/mock/:id/complete'], async (req: Request, res: Response) => {
   try {
-    if (!isTestPaymentsEnabled()) return res.status(404).json({ message: 'Not found' });
+    if (!isTestPaymentsEnabled() || !canSimulatePayment(req.user!.email)) return res.status(404).json({ message: 'Not found' });
     const id = uuid.safeParse(req.params.id);
-    const outcome = z.enum(['paid', 'failed', 'cancelled']).safeParse(req.body?.outcome);
+    const outcome = z.enum(['paid', 'failed', 'cancelled','expired']).safeParse(req.body?.outcome);
     if (!id.success || !outcome.success) return res.status(400).json({ message: 'Invalid request' });
 
     const [orderRow] = await db.select({ order: orders }).from(orders)
@@ -96,11 +99,11 @@ router.post('/test/:id/complete', async (req: Request, res: Response) => {
       .where(and(eq(orders.id, id.data), isNull(courses.organizationId)))
       .limit(1);
     const order = orderRow?.order;
-    if (!order || order.studentId !== req.user!.id || order.provider !== 'test') {
+    if (!order || order.studentId !== req.user!.id || !['test','paymob_mock'].includes(order.provider)) {
       return res.status(404).json({ message: 'Order not found' });
     }
     if (order.status !== 'pending') {
-      return res.status(409).json({ message: `This order is already ${order.status}.` });
+      return res.json({order:publicOrder(order)});
     }
 
     const updated = await finalizeOrder(order.id, outcome.data);

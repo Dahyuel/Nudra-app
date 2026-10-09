@@ -1,6 +1,7 @@
+import { lessonAccess } from '../lib/access';
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import { eq, and, asc, desc, inArray, isNull } from 'drizzle-orm';
+import { eq, and, asc, desc, inArray, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db';
 import {
@@ -30,37 +31,9 @@ const courseRealm = (organizationId: string | null) => organizationId === null
   ? isNull(courses.organizationId)
   : eq(courses.organizationId, organizationId);
 
-async function verifyLessonAccess(
-  lessonId: string,
-  userId: string,
-  role: string,
-  organizationId: string | null,
-): Promise<LessonAccessResult> {
-  const lessonRows = await db.select({ lesson: lessons, course: courses })
-    .from(lessons)
-    .innerJoin(courses, eq(lessons.courseId, courses.id))
-    .where(and(eq(lessons.id, lessonId), courseRealm(organizationId)))
-    .limit(1);
-  if (lessonRows.length === 0) return { allowed: false, status: 404, message: 'Lesson not found' };
-
-  const { lesson, course } = lessonRows[0];
-
-  if (role === 'instructor') {
-    if (course.instructorId === userId) {
-      return { allowed: true, lesson };
-    }
-  }
-
-  if (lesson.isFree) return { allowed: true, lesson };
-
-  const enr = await db
-    .select()
-    .from(enrollments)
-    .where(and(eq(enrollments.studentId, userId), eq(enrollments.courseId, lesson.courseId)))
-    .limit(1);
-  if (enr.length > 0) return { allowed: true, lesson };
-
-  return { allowed: false, status: 403, message: 'Access denied' };
+async function verifyLessonAccess(lessonId: string, userId: string, role: string, organizationId: string | null): Promise<LessonAccessResult> {
+ const access = await lessonAccess(lessonId,userId,role,organizationId);
+ return access.allowed && access.lesson ? {allowed:true,lesson:access.lesson} : {allowed:false,status:access.status,message:access.message};
 }
 
 export async function generateWeakTopics(
@@ -89,7 +62,7 @@ export async function generateWeakTopics(
       eq(lessons.courseId, courses.id),
       courseRealm(organizationId),
     ))
-    .orderBy(desc(quizAttempts.completedAt));
+    .orderBy(desc(quizAttempts.completedAt)).limit(50);
 
   if (attemptRows.length < 2) {
     return { error: 'Not enough quiz data yet. Complete at least 2 lesson quizzes to get a weak topic analysis.' };
@@ -252,7 +225,7 @@ router.post('/:quizId/attempt', requireRole('student'), async (req: Request, res
     const { quizId } = req.params;
     const { answers } = req.body ?? {};
 
-    if (!answers || typeof answers !== 'object') {
+    if (!z.record(z.string().uuid(), z.enum(['a','b','c','d'])).safeParse(answers).success) {
       return res.status(400).json({ message: 'answers object is required' });
     }
 
@@ -357,7 +330,7 @@ router.get('/:quizId/attempts', requireRole('student'), async (req: Request, res
       })
       .from(quizAttempts)
       .where(and(eq(quizAttempts.quizId, quizId), eq(quizAttempts.studentId, studentId)))
-      .orderBy(desc(quizAttempts.completedAt));
+      .orderBy(desc(quizAttempts.completedAt)).limit(100);
 
     return res.json({ attempts: rows });
   } catch (err) {
@@ -388,7 +361,7 @@ router.post('/exam/generate', requireRole('student'), async (req: Request, res: 
     const enr = await db
       .select()
       .from(enrollments)
-      .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, courseId)))
+      .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, courseId), eq(enrollments.status, 'active')))
       .limit(1);
     if (enr.length === 0) return res.status(403).json({ message: 'Not enrolled in this course' });
 
@@ -396,7 +369,11 @@ router.post('/exam/generate', requireRole('student'), async (req: Request, res: 
       .where(and(eq(courses.id, courseId), courseRealm(req.organization?.id ?? null))).limit(1);
     const courseTitle = courseRows[0]?.title ?? '';
 
-    const pool = await db
+    const generated = await db.transaction(async tx => {
+    await tx.select({id:courses.id}).from(courses).where(eq(courses.id,courseId)).for('share');
+    const active = await tx.select({id:enrollments.id}).from(enrollments).where(and(eq(enrollments.studentId,studentId),eq(enrollments.courseId,courseId),eq(enrollments.status,'active'))).limit(1);
+    if (!active.length) throw Object.assign(new Error('Not enrolled in this course'), {status:403});
+    const pool = await tx
       .select({
         id: quizQuestions.id,
         questionText: quizQuestions.questionText,
@@ -408,13 +385,21 @@ router.post('/exam/generate', requireRole('student'), async (req: Request, res: 
       .from(quizQuestions)
       .innerJoin(quizzes, eq(quizQuestions.quizId, quizzes.id))
       .innerJoin(courses, eq(quizzes.courseId, courses.id))
-      .where(and(eq(quizzes.courseId, courseId), courseRealm(req.organization?.id ?? null)));
+      .where(and(eq(quizzes.courseId, courseId), courseRealm(req.organization?.id ?? null)))
+      .orderBy(sql`random()`).limit(questionCount);
 
     const shuffled = pool.sort(() => Math.random() - 0.5);
     const selected = shuffled.slice(0, Math.min(questionCount, shuffled.length));
 
+    const examId = randomUUID();
+    if (!selected.length) throw Object.assign(new Error('No questions are available.'), {status:422});
+    const snapshots = await tx.select({question:quizQuestions,quiz:quizzes}).from(quizQuestions).innerJoin(quizzes,eq(quizQuestions.quizId,quizzes.id)).where(inArray(quizQuestions.id,selected.map(q=>q.id)));
+    await tx.execute(sql`INSERT INTO exam_assignments(id,student_id,course_id,questions,expires_at) VALUES(${examId},${studentId},${courseId},${JSON.stringify(snapshots)}::jsonb,now()+${timeLimitMinutes*60}*interval '1 second')`);
+    return {selected,examId};
+    });
+    const {selected,examId} = generated;
     return res.json({
-      examId: randomUUID(),
+      examId,
       questions: selected,
       timeLimitMinutes,
       courseTitle,
@@ -422,14 +407,16 @@ router.post('/exam/generate', requireRole('student'), async (req: Request, res: 
     });
   } catch (err) {
     console.error('exam generate error', err);
+    if (err instanceof Error && 'status' in err && (err.status===403 || err.status===422)) return res.status(err.status).json({message:err.message});
     return res.status(500).json({ message: 'Internal server error' });
   }
 });
 
 const examSubmitSchema = z.object({
   courseId: z.string().uuid(),
-  answers: z.record(z.string(), z.string()),
-  timeTakenSeconds: z.number().int().min(0),
+  examId: z.string().uuid(),
+  answers: z.record(z.string().uuid(), z.enum(['a','b','c','d'])),
+  timeTakenSeconds: z.number().int().min(0).max(86400),
 });
 
 router.post('/exam/submit', requireRole('student'), async (req: Request, res: Response) => {
@@ -439,7 +426,7 @@ router.post('/exam/submit', requireRole('student'), async (req: Request, res: Re
     if (!parsed.success) {
       return res.status(400).json({ message: 'Invalid submission', errors: parsed.error.flatten() });
     }
-    const { courseId, answers, timeTakenSeconds } = parsed.data;
+    const { courseId, answers, examId } = parsed.data;
 
     const scopedCourse = await db.select({ id: courses.id }).from(courses)
       .where(and(eq(courses.id, courseId), courseRealm(req.organization?.id ?? null))).limit(1);
@@ -448,39 +435,18 @@ router.post('/exam/submit', requireRole('student'), async (req: Request, res: Re
     const enr = await db
       .select()
       .from(enrollments)
-      .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, courseId)))
+      .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, courseId), eq(enrollments.status, 'active')))
       .limit(1);
     if (enr.length === 0) return res.status(403).json({ message: 'Not enrolled in this course' });
 
-    const answerEntries = Object.entries(answers);
-    if (answerEntries.length === 0) {
-      return res.json({
-        score: 0,
-        total: 0,
-        percentage: 0,
-        timeTakenSeconds,
-        questions: [],
-        weakTopics: null,
-      });
-    }
-
-    const questionRows = await db
-      .select({
-        question: quizQuestions,
-        quiz: quizzes,
-      })
-      .from(quizQuestions)
-      .innerJoin(quizzes, eq(quizQuestions.quizId, quizzes.id))
-      .innerJoin(courses, eq(quizzes.courseId, courses.id))
-      .where(and(
-        inArray(quizQuestions.id, answerEntries.map(([id]) => id)),
-        eq(quizzes.courseId, courseId),
-        courseRealm(req.organization?.id ?? null),
-      ));
-
-    if (questionRows.length !== answerEntries.length) {
-      return res.status(400).json({ message: 'One or more questions do not belong to this course.' });
-    }
+    const assignmentResult = await db.execute(sql`SELECT * FROM exam_assignments WHERE id=${examId} AND student_id=${studentId} AND course_id=${courseId}`);
+    const assignment = assignmentResult.rows[0] as {questions:Array<{question:typeof quizQuestions.$inferSelect;quiz:typeof quizzes.$inferSelect}>;started_at:Date;expires_at:Date;result:unknown}|undefined;
+    if (!assignment) return res.status(404).json({message:'Exam not found'});
+    if (assignment.result) return res.json(assignment.result);
+    if (Date.now()>new Date(assignment.expires_at).getTime()+30000) return res.status(409).json({message:'The exam has expired.'});
+    const timeTakenSeconds = Math.max(0,Math.floor((Date.now()-new Date(assignment.started_at).getTime())/1000));
+    const questionRows = assignment.questions;
+    if (Object.keys(answers).some(id=>!questionRows.some(row=>row.question.id===id))) return res.status(400).json({message:'Question does not belong to this exam'});
 
     const byQuiz = new Map<string, { quizId: string; lessonId: string; questions: typeof questionRows }>();
     for (const row of questionRows) {
@@ -517,36 +483,25 @@ router.post('/exam/submit', requireRole('student'), async (req: Request, res: Re
     const total = questionRows.length;
     const percentage = total > 0 ? Math.round((score / total) * 100) : 0;
 
-    for (const group of byQuiz.values()) {
-      const groupAnswers: Record<string, string> = {};
-      let groupScore = 0;
-      for (const row of group.questions) {
-        const ans = answers[row.question.id];
-        if (ans) groupAnswers[row.question.id] = ans;
-        if (ans === row.question.correctOption) groupScore++;
+    // AI analysis is a separate bounded operation; grading never waits for a provider.
+    const weakTopicsResult = null;
+
+    const result = {score,total,percentage,timeTakenSeconds,questions:graded,weakTopics:weakTopicsResult};
+    const saved = await db.transaction(async tx => {
+      const [current] = await tx.execute(sql`SELECT result FROM exam_assignments WHERE id=${examId} FOR UPDATE`).then(r=>r.rows);
+      if (current.result) return current.result;
+      for (const group of byQuiz.values()) {
+        // Preserve snapshots in the exam; practice attempts reference only a still-existing quiz.
+        const [exists] = await tx.select({id:quizzes.id}).from(quizzes).where(eq(quizzes.id,group.quizId));
+        if (!exists) continue;
+        const groupAnswers=Object.fromEntries(group.questions.map(row=>[row.question.id,answers[row.question.id]??'']));
+        const groupScore=group.questions.filter(row=>answers[row.question.id]===row.question.correctOption).length;
+        await tx.insert(quizAttempts).values({quizId:group.quizId,studentId,lessonId:group.lessonId,courseId,answers:JSON.stringify(groupAnswers),score:groupScore,totalQuestions:group.questions.length,percentage:Math.round(groupScore*100/group.questions.length)});
       }
-      const groupTotal = group.questions.length;
-      await db.insert(quizAttempts).values({
-        quizId: group.quizId,
-        studentId,
-        lessonId: group.lessonId,
-        courseId,
-        answers: JSON.stringify(groupAnswers),
-        score: groupScore,
-        totalQuestions: groupTotal,
-        percentage: groupTotal > 0 ? Math.round((groupScore / groupTotal) * 100) : 0,
-      });
-    }
-
-    let weakTopicsResult: { topicSummary: string; recommendations: string; generatedAt: Date } | null = null;
-    try {
-      const result = await generateWeakTopics(studentId, courseId, req.organization?.id ?? null);
-      if (!('error' in result)) weakTopicsResult = result;
-    } catch (weakErr) {
-      console.warn('weak topic generation failed after exam', weakErr);
-    }
-
-    return res.json({ score, total, percentage, timeTakenSeconds, questions: graded, weakTopics: weakTopicsResult });
+      await tx.execute(sql`UPDATE exam_assignments SET submitted_at=now(),result=${JSON.stringify(result)}::jsonb WHERE id=${examId}`);
+      return result;
+    });
+    return res.json(saved);
   } catch (err) {
     console.error('exam submit error', err);
     return res.status(500).json({ message: 'Internal server error' });

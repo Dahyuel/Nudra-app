@@ -413,22 +413,8 @@ router.post('/:id/enroll', requireAuth, async (req: Request, res: Response) => {
       // Semester-style enrollment: free in the UI (payment is marked at the
       // venue), capacity capped by the course's default session seat count.
       // Each active enrollee rosters onto every future scheduled session.
-      if (course.capacity != null) {
-        const [{ value: activeCount }] = await db
-          .select({ value: count(enrollments.id) })
-          .from(enrollments)
-          .where(and(eq(enrollments.courseId, id), eq(enrollments.kind, 'offline_semester'), eq(enrollments.status, 'active')));
-        if (Number(activeCount) >= course.capacity) {
-          return res.status(409).json({ message: 'This course is full. Try booking individual sessions as a drop-in.' });
-        }
-      }
-      const { enrollment } = await enrollStudent(studentId, course, 'offline_semester');
-      if (!enrollment) return res.status(409).json({ message: 'Already enrolled' });
-      try {
-        await fanOutBookingsForEnrollment(studentId, course.id);
-      } catch (fanOutErr) {
-        console.error('offline enrollment fan-out failed', fanOutErr);
-      }
+      const { enrollment } = await enrollStudent(studentId,course,'offline_semester');
+      if (!enrollment) return res.status(409).json({message:'Already enrolled'});
       return res.status(201).json({ enrollment });
     }
 
@@ -441,6 +427,7 @@ router.post('/:id/enroll', requireAuth, async (req: Request, res: Response) => {
     if (!enrollment) return res.status(409).json({ message: 'Already enrolled' });
     return res.status(201).json({ enrollment });
   } catch (err) {
+    if (err && typeof err === 'object' && 'status' in err && err.status === 409) return res.status(409).json({message:'This course is full.'});
     console.error('enroll error', err);
     return res.status(500).json({ message: 'Internal server error' });
   }

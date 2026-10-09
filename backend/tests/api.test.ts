@@ -70,12 +70,12 @@ after(async () => {
 test('backend is reachable', async () => {
   const r = await api('GET', '/api/health');
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body, { status: 'ok' });
+  assert.deepEqual(r.body, { status: 'ready' });
 });
 
 test('auth: register, sign in, /me, wrong password, role cannot be self-assigned', async () => {
   const registered = await api('POST', '/api/auth/register', {
-    body: { name: 'QA auth', email: email('auth'), password: PASSWORD },
+    body: { name: 'QA auth', email: email('auth'), password: PASSWORD, phone: '01012345678' },
   });
   assert.equal(registered.status, 201, JSON.stringify(registered.body));
   const cookie = registered.cookie;

@@ -12,3 +12,11 @@ export function getIO(): Server {
   }
   return ioInstance;
 }
+
+export function disconnectUser(userId: string): void {
+  ioInstance?.in(`user:${userId}`).disconnectSockets(true);
+}
+
+export function disconnectSession(sessionId: string): void {
+  ioInstance?.in(`session:${sessionId}`).disconnectSockets(true);
+}

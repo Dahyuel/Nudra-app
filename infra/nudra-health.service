@@ -1,0 +1,9 @@
+[Unit]
+Description=Nudra dependency, job and disk checks
+After=docker.service
+OnFailure=nudra-alert@%n.service
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/nudra
+ExecStart=/usr/bin/bash /opt/nudra/ops/check-production-health.sh
+TimeoutStartSec=60

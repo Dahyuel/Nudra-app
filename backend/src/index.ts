@@ -1,3 +1,13 @@
+import { maintenance } from './lib/maintenance';
+import { startSocketRevocation, stopSocketRevocation, socketRevocationReady } from './lib/socketRevocation';
+import { providerContext } from './lib/providerBudget';
+import { protectRouter } from './lib/asyncRouter';
+import { pool } from './db';
+import { rateLimitRedis } from './middleware/rateLimit';
+import { videoQueue } from './lib/queue';
+import { sql } from 'drizzle-orm';
+import { storage, HLS_BUCKET } from './lib/minio';
+import { randomUUID } from 'node:crypto';
 import 'dotenv/config';
 import express from 'express';
 import { createServer } from 'http';
@@ -39,6 +49,9 @@ import { createRedisRateLimitStore } from './middleware/rateLimit';
 
 const isProd = process.env.NODE_ENV === 'production';
 const app = express();
+if (isProd && (!process.env.ANON_TOKEN_SALT || process.env.ANON_TOKEN_SALT.length < 32)) throw new Error('ANON_TOKEN_SALT must contain at least 32 characters in production');
+if (isProd && !/^[0-9a-f]{64}$/i.test(process.env.EMAIL_OUTBOX_KEY ?? '')) throw new Error('EMAIL_OUTBOX_KEY must be a 32-byte hex key in production');
+if (isProd && !process.env.RESEND_API_KEY) throw new Error('RESEND_API_KEY is required for production account email');
 const httpServer = createServer(app);
 const trustProxy = process.env.TRUST_PROXY?.trim();
 function isExplicitProxyAddress(value: string): boolean {
@@ -147,7 +160,7 @@ io.use(async (socket, next) => {
     }
 
     const rows = await db
-      .select({ userId: sessions.userId })
+      .select({ userId: sessions.userId, mfaVerified: sessions.mfaVerified })
       .from(sessions)
       .where(and(eq(sessions.id, sessionId), gt(sessions.expiresAt, new Date())))
       .limit(1);
@@ -157,12 +170,12 @@ io.use(async (socket, next) => {
     }
 
     const userRows = await db
-      .select({ id: users.id, role: users.role, organizationId: users.organizationId })
+      .select({ id: users.id, role: users.role, organizationId: users.organizationId, mustChangePassword: users.mustChangePassword })
       .from(users)
       .where(eq(users.id, rows[0].userId))
       .limit(1);
 
-    if (userRows.length === 0) {
+    if (userRows.length === 0 || userRows[0].mustChangePassword || (isProd && userRows[0].role==='admin' && !rows[0].mfaVerified)) {
       return next(new Error('Unauthorized'));
     }
 
@@ -199,6 +212,8 @@ io.use(async (socket, next) => {
       if (!membership) return next(new Error('Unauthorized'));
     }
 
+    socket.data.sessionId = sessionId;
+    if ((io.sockets.adapter.rooms.get('user:'+userRows[0].id)?.size??0)>=5 || io.engine.clientsCount>=1000) return next(new Error('Connection limit reached'));
     socket.data.user = userRows[0];
     socket.data.organization = organization ?? null;
     next();
@@ -248,26 +263,51 @@ async function canJoinCommunityRoom(
 
   if (course.instructorId === user.id) return true;
   const [enrollment] = await db.select({ id: enrollments.id }).from(enrollments).where(and(
-    eq(enrollments.courseId, course.id), eq(enrollments.studentId, user.id),
+    eq(enrollments.courseId, course.id), eq(enrollments.studentId, user.id), eq(enrollments.status, 'active'),
   )).limit(1);
   return Boolean(enrollment);
 }
 
 io.on('connection', (socket) => {
-  const userId = socket.data.user?.id as string | undefined;
-  if (userId) {
-    socket.join(`user:${userId}`);
-  }
-
-  socket.on('join_room', (roomName: unknown) => {
-    const user = socket.data.user as { id: string; role: string; organizationId: string | null } | undefined;
-    const organization = (socket.data.organization ?? null) as typeof organizations.$inferSelect | null;
-    if (!user || typeof roomName !== 'string' || roomName.length > 100) {
-      return;
+  const sessionId = socket.data.sessionId as string;
+  socket.join('session:' + sessionId);
+  socket.join('user:' + socket.data.user.id);
+  let checking = false;
+  let windowStarted = Date.now();
+  let events = 0;
+  async function refresh(): Promise<boolean> {
+    const [row] = await db.select({user:users,mfaVerified:sessions.mfaVerified}).from(sessions).innerJoin(users,eq(users.id,sessions.userId))
+      .where(and(eq(sessions.id,sessionId),gt(sessions.expiresAt,new Date()))).limit(1);
+    const organization = socket.data.organization ?? undefined;
+    if (!row || row.user.mustChangePassword || (isProd && row.user.role==='admin' && !row.mfaVerified) || !(await isUserAllowedInOrganization(row.user,organization))) return false;
+    if (organization) {
+      const [org] = await db.select({id:organizations.id}).from(organizations).where(and(eq(organizations.id,organization.id),eq(organizations.isActive,true))).limit(1);
+      const [membership] = await db.select({id:orgMemberships.id}).from(orgMemberships).where(and(eq(orgMemberships.orgId,organization.id),eq(orgMemberships.userId,row.user.id),eq(orgMemberships.status,'active'))).limit(1);
+      if (!org || (!membership && row.user.role !== 'admin')) return false;
     }
-    void canJoinCommunityRoom(user, organization, roomName).then((allowed) => {
-      if (allowed) return socket.join(roomName);
-    }).catch(() => undefined);
+    const {passwordHash, ...publicUser} = row.user;
+    socket.data.user = publicUser;
+    for (const room of socket.rooms) {
+      if (/^(course:|subject:|community:)/.test(room) && !(await canJoinCommunityRoom(publicUser,organization ?? null,room))) await socket.leave(room);
+    }
+    return true;
+  }
+  const timer = setInterval(() => {
+    if (checking) return;
+    checking = true;
+    void refresh().then(ok => {if (!ok) socket.disconnect(true);}).catch(() => socket.disconnect(true)).finally(() => {checking=false;});
+  },15000);
+  timer.unref();
+  socket.on('disconnect',() => clearInterval(timer));
+  socket.on('join_room', (roomName: unknown) => {
+    if (Date.now()-windowStarted > 60000) {windowStarted=Date.now();events=0;}
+    if (++events > 20) {socket.disconnect(true);return;}
+    if (checking || typeof roomName !== 'string' || roomName.length > 100 || socket.rooms.size >= 16) return;
+    checking = true;
+    void refresh().then(async ok => {
+      if (!ok) {socket.disconnect(true);return;}
+      if (await canJoinCommunityRoom(socket.data.user,socket.data.organization ?? null,roomName)) await socket.join(roomName);
+    }).catch(() => socket.disconnect(true)).finally(() => {checking=false;});
   });
 });
 
@@ -305,6 +345,7 @@ app.use(
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb', parameterLimit: 100 }));
 app.use(cookieParser());
+app.use(providerContext);
 
 app.use('/api', (req, res, next) => {
   res.set({
@@ -314,6 +355,29 @@ app.use('/api', (req, res, next) => {
   });
   return next();
 });
+app.use((req,res,next) => {
+  const requestId = randomUUID();
+  res.setHeader('X-Request-ID',requestId);
+  const started = Date.now();
+  res.on('finish',() => console.log(JSON.stringify({type:'request',requestId,method:req.method,path:req.path.replace(/[0-9a-f-]{36}/gi,':id'),status:res.statusCode,durationMs:Date.now()-started})));
+  res.on('finish',() => {
+    if (['POST','PUT','PATCH','DELETE'].includes(req.method) && req.user) void db.execute(sql`INSERT INTO security_audit_events(actor_id,action,resource,outcome,request_id) VALUES(${req.user.id},${req.method},${req.originalUrl.split('?')[0]},${res.statusCode},${requestId})`).catch(()=>console.error('Security audit persistence failed'));
+  });
+  next();
+});
+app.get('/api/health/live',(_req,res) => res.json({status:'ok'}));
+app.get(['/api/health','/api/health/ready'],async (_req,res) => {
+  try {
+    if (!socketRevocationReady()) throw new Error('Realtime revocation listener unavailable');
+    await Promise.race([
+      Promise.all([pool.query('SELECT 1'), rateLimitRedis.ping(), storage.bucketExists(HLS_BUCKET)]),
+      new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error('Readiness deadline')),3000);timer.unref();}),
+    ]);
+    res.json({status:'ready'});
+  } catch {res.status(503).json({status:'unavailable'});}
+});
+// Internal TLS authorization is independent of public tenant host resolution.
+app.use('/api/domains',domainAuthorizationRouter);
 app.use(resolveOrg);
 app.use('/api', requireActiveOrganizationMembership);
 
@@ -403,7 +467,7 @@ const aiLimiter = rateLimit({
   message: { message: 'Too many AI requests, please slow down' },
 });
 
-app.use('/api', speedLimiter);
+app.use('/api', (req,res,next) => req.path.startsWith('/videos/') ? next() : speedLimiter(req,res,next));
 // Only credential endpoints get the strict limiter; /api/auth/me runs on every
 // page load and must not lock users out.
 app.use('/api/auth/login', loginLimiter);
@@ -419,11 +483,9 @@ app.use(
   authLimiter
 );
 app.use('/api/ai', aiLimiter);
-app.use('/api', limiter);
+app.use('/api', (req,res,next) => req.path.startsWith('/videos/') ? next() : limiter(req,res,next));
 
-app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok' });
-});
+
 
 const globalOnlyOrgRoutes = new Set([
   'my-courses', 'progress', 'notes', 'stats', 'quizzes', 'sanaweya',
@@ -472,10 +534,10 @@ app.use('/api/catalog', catalogRouter);
 app.use('/api/payments', paymentsRouter);
 app.use('/api/bookings', bookingsRouter);
 app.use('/api/organizations', organizationsRouter);
-app.use('/api/domains', domainAuthorizationRouter);
+protectRouter(app);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  if (res.headersSent) return;
+  if (res.headersSent) return res.destroy();
   if (typeof err === 'object' && err !== null && 'code' in err && err.code === 'LIMIT_FILE_SIZE') {
     return res.status(413).json({ message: 'File is too large. Maximum size is 5MB.' });
   }
@@ -488,9 +550,24 @@ app.use((err: unknown, _req: express.Request, res: express.Response, _next: expr
   });
 });
 
+const maintenanceTimer=setInterval(()=>void maintenance().catch(()=>console.error('Maintenance failed')),60000);maintenanceTimer.unref();
 const PORT = Number(process.env.PORT) || 3001;
 
 httpServer.listen(PORT, () => {
+  void startSocketRevocation();
   console.log(`Nudra backend running on port ${PORT}`);
-  ensureBucket();
+  void ensureBucket().catch(error => console.error('Storage initialization failed', error));
 });
+
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  clearInterval(maintenanceTimer);
+  const deadline=setTimeout(() => process.exit(1),25000);deadline.unref();
+  await new Promise<void>(resolve => io.close(() => resolve()));
+  await Promise.allSettled([stopSocketRevocation(),pool.end(),rateLimitRedis.quit(),videoQueue.close()]);
+  clearTimeout(deadline);
+}
+process.once('SIGTERM',() => void shutdown());
+process.once('SIGINT',() => void shutdown());

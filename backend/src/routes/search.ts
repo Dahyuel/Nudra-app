@@ -9,7 +9,7 @@ router.get('/', async (req: Request, res: Response) => {
   try {
     const q = typeof req.query.q === 'string' ? req.query.q.trim() : '';
 
-    if (q.length < 2) {
+    if (q.length < 2 || q.length > 200) {
       return res.json({ courses: [], lessons: [], posts: [] });
     }
 
@@ -71,10 +71,7 @@ router.get('/', async (req: Request, res: Response) => {
         .where(
           and(
             eq(communityPosts.isAnonymous, false),
-            or(
-              isNull(communityPosts.courseId),
-              and(isNotNull(courses.id), isNull(courses.organizationId)),
-            ),
+            isNull(communityPosts.courseId), isNull(communityPosts.subjectCommunityId),
             or(ilike(communityPosts.title, like), ilike(communityPosts.content, like))
           )
         )

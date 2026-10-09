@@ -47,6 +47,7 @@ import {
 } from '../lib/minio';
 import { videoQueue } from '../lib/queue';
 import { chatCompletion } from '../lib/deepseek';
+import { resourceLock } from '../middleware/resourceLock';
 
 const router = Router();
 
@@ -431,7 +432,6 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
     if (booking_url !== undefined) updateValues.bookingUrl = booking_url;
     if (schedule_text !== undefined) updateValues.scheduleText = schedule_text;
     if (capacity !== undefined) updateValues.capacity = capacity;
-    if (capacity !== undefined) updateValues.capacity = capacity;
     if (resultingDeliveryMode === 'offline') updateValues.price = '0';
     if (organizationSubmissionChanged) {
       // Any instructor edit to an organization course, including curriculum
@@ -507,12 +507,19 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
 
         const removedLessonIds = existingLessons.map((l) => l.id).filter((lid) => !keptLessonIds.has(lid));
         if (removedLessonIds.length > 0) {
+          const activeExams = await tx.execute(sql`SELECT id FROM exam_assignments WHERE course_id=${id} AND result IS NULL AND expires_at>now() LIMIT 1`);
+          if (activeExams.rows.length) throw Object.assign(new Error('Lessons cannot be removed while an exam is active'), {status:409});
           // enrollments.last_lesson_id has no ON DELETE rule; clear it first or
           // the delete fails for any student who resumed one of these lessons.
           await tx
             .update(enrollments)
             .set({ lastLessonId: null })
             .where(inArray(enrollments.lastLessonId, removedLessonIds));
+          const attemptHistory=await tx.select({id:quizAttempts.id}).from(quizAttempts).where(inArray(quizAttempts.lessonId,removedLessonIds)).limit(1);
+          if(attemptHistory.length) throw Object.assign(new Error('Lessons with quiz history cannot be removed'),{status:409});
+          for(const lessonId of removedLessonIds) {
+            await tx.execute(sql`INSERT INTO object_cleanup_tasks(bucket,prefix,available_at) VALUES(${RAW_VIDEO_BUCKET},${'lessons/raw/'+lessonId+'/'},now()+interval '1 hour'),(${HLS_BUCKET},${'lessons/'+lessonId+'/'},now()+interval '1 hour')`);
+          }
           await tx.delete(lessons).where(inArray(lessons.id, removedLessonIds));
         }
 
@@ -521,8 +528,8 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
           await tx.delete(courseSections).where(inArray(courseSections.id, removedSectionIds));
         }
       }
+      await tx.execute(sql`UPDATE enrollments e SET progress=coalesce((SELECT round(100.0*count(p.id) FILTER(WHERE p.completed AND l.duration_seconds>0 AND p.watched_seconds>=ceil(l.duration_seconds*0.9))/nullif(count(l.id),0))::int FROM lessons l LEFT JOIN lesson_progress p ON p.lesson_id=l.id AND p.student_id=e.student_id WHERE l.course_id=e.course_id),0) WHERE e.course_id=${id}`);
     });
-
     const updatedCourse = await db.select().from(courses).where(courseById(req, id)).limit(1);
     const sectionRows = await db
       .select()
@@ -544,6 +551,7 @@ router.put('/courses/:id', async (req: Request, res: Response) => {
 
     return res.json({ course: { ...updatedCourse[0], curriculum } });
   } catch (err) {
+    if (err && typeof err==='object' && 'status' in err && err.status===409) return res.status(409).json({message:'Lessons with student quiz history cannot be removed.'});
     console.error('update course error', err);
     return res.status(500).json({ message: 'Internal server error' });
   }
@@ -624,53 +632,18 @@ router.delete('/courses/:id', async (req: Request, res: Response) => {
     const course = await loadOwnedCourse(req, res);
     if (!course) return;
 
-    const [{ value: studentCount }] = await db
-      .select({ value: count() })
-      .from(enrollments)
-      .where(eq(enrollments.courseId, course.id));
-    if (Number(studentCount) > 0) {
-      return res.status(409).json({
-        message: `${studentCount} student${Number(studentCount) === 1 ? ' is' : 's are'} enrolled in this course, so it can't be deleted. Unpublish it instead to hide it from the catalog.`,
-        studentCount: Number(studentCount),
-      });
-    }
-
-    const bookingCountResult = await db.execute(sql`SELECT COUNT(b.id)::int AS value
-      FROM course_sessions s JOIN course_bookings b ON b.session_id=s.id
-      WHERE s.course_id=${course.id}`);
-    const bookingCount = Number((bookingCountResult as { rows?: Array<{ value?: number | string }> }).rows?.[0]?.value ?? 0);
-    if (bookingCount > 0) {
-      return res.status(409).json({
-        message: 'This course has booking history, so it can’t be deleted. Unpublish it to keep its attendance and reservation records.',
-        bookingCount,
-      });
-    }
-
-    const lessonIds = (
-      await db.select({ id: lessons.id }).from(lessons).where(eq(lessons.courseId, course.id))
-    ).map((l) => l.id);
-
-    await db.delete(courses).where(courseById(req, course.id));
-
-    // Storage isn't covered by the database cascade: remove each lesson's raw
-    // upload and HLS files. Failures are logged but don't undo the delete.
-    for (const lessonId of lessonIds) {
-      try {
-        for (const key of await listRawVideoKeys(lessonId)) await storage.removeObject(RAW_VIDEO_BUCKET, key);
-        const hlsKeys: string[] = [];
-        for await (const obj of storage.listObjectsV2(HLS_BUCKET, `lessons/${lessonId}/`, true) as AsyncIterable<{
-          name?: string;
-        }>) {
-          if (obj.name) hlsKeys.push(obj.name);
-        }
-        for (const key of hlsKeys) await storage.removeObject(HLS_BUCKET, key);
-      } catch (storageErr) {
-        console.warn(`failed to remove stored video files for lesson ${lessonId}`, storageErr);
-      }
-    }
+    await db.transaction(async tx => {
+      await tx.select().from(courses).where(courseById(req,course.id)).for('update');
+      const history=await tx.execute(sql`SELECT EXISTS(SELECT 1 FROM enrollments WHERE course_id=${course.id}) OR EXISTS(SELECT 1 FROM course_bookings WHERE course_id=${course.id}) OR EXISTS(SELECT 1 FROM orders WHERE course_id=${course.id}) AS present`);
+      if(history.rows[0]?.present) throw Object.assign(new Error('Course history must be preserved. Unpublish this course instead.'),{status:409});
+      const lessonRows=await tx.select({id:lessons.id}).from(lessons).where(eq(lessons.courseId,course.id));
+      for(const lesson of lessonRows) await tx.execute(sql`INSERT INTO object_cleanup_tasks(bucket,prefix,available_at) VALUES(${RAW_VIDEO_BUCKET},${'lessons/raw/'+lesson.id+'/'},now()+interval '1 hour'),(${HLS_BUCKET},${'lessons/'+lesson.id+'/'},now()+interval '1 hour')`);
+      await tx.delete(courses).where(courseById(req,course.id));
+    });
 
     return res.json({ message: 'Course deleted' });
   } catch (err) {
+    if ((err instanceof Error) && (err as Error & {status?:number}).status===409) return res.status(409).json({message:err.message});
     console.error('delete course error', err);
     return res.status(500).json({ message: 'Internal server error' });
   }
@@ -750,8 +723,21 @@ router.post('/lessons/:lessonId/video-uploads', videoUploadStartLimiter, async (
       // Serialize admission across API workers so concurrent starts cannot
       // exceed either the per-instructor or platform-wide active quota.
       await tx.execute(sql`SELECT pg_advisory_xact_lock(721388501)`);
+      const [busy] = await tx.select({id:videoJobs.id}).from(videoJobs).where(and(eq(videoJobs.lessonId,lessonId),inArray(videoJobs.status,['pending','transcoding','transcribed'])));
+      const [uploading] = await tx.select({id:videoUploadSessions.id}).from(videoUploadSessions).where(eq(videoUploadSessions.lessonId,lessonId));
+      const reserved = await tx.execute(sql`SELECT coalesce(sum(file_size),0)::bigint AS bytes FROM video_upload_sessions WHERE instructor_id=${req.user!.id} AND status IN('uploading','completed')`);
+      const ownerPending=await tx.execute(sql`SELECT coalesce(sum(file_size+2147483648),0)::bigint AS bytes FROM video_upload_sessions WHERE instructor_id=${req.user!.id} AND status IN('uploading','completed')`);
+      const stored=await tx.execute(sql`SELECT coalesce(sum(bytes),0)::bigint AS bytes FROM media_storage_usage WHERE instructor_id=${req.user!.id}`);
+      const organizationStored=await tx.execute(sql`SELECT coalesce(sum(bytes),0)::bigint AS bytes FROM media_storage_usage WHERE organization_id IS NOT DISTINCT FROM ${req.organization?.id??null}::uuid`);
+      const organizationPending=await tx.execute(sql`SELECT coalesce(sum(u.file_size+2147483648),0)::bigint AS bytes FROM video_upload_sessions u JOIN lessons l ON l.id=u.lesson_id JOIN courses c ON c.id=l.course_id WHERE c.organization_id IS NOT DISTINCT FROM ${req.organization?.id??null}::uuid`);
+      const platformStored=await tx.execute(sql`SELECT coalesce(sum(bytes),0)::bigint AS bytes FROM media_storage_usage`);
+      const platformPending=await tx.execute(sql`SELECT coalesce(sum(file_size+2147483648),0)::bigint AS bytes FROM video_upload_sessions`);
+      const outputReserve=2*1024**3;
+      if(Number(stored.rows[0]?.bytes)+Number(ownerPending.rows[0]?.bytes)+parsed.data.fileSize+outputReserve>10*1024**3 || Number(organizationStored.rows[0]?.bytes)+Number(organizationPending.rows[0]?.bytes)+parsed.data.fileSize+outputReserve>(req.organization?20:100)*1024**3 || Number(platformStored.rows[0]?.bytes)+Number(platformPending.rows[0]?.bytes)+parsed.data.fileSize+outputReserve>100*1024**3) return 'platform-limit' as const;
+      const backlog=await videoQueue.getJobCounts('waiting','active','delayed');
+      if (busy || uploading || Object.values(backlog).reduce((a,b)=>a+b,0)>=20 || Number(reserved.rows[0]?.bytes)+parsed.data.fileSize>4*1024*1024*1024) return 'platform-limit' as const;
       const [platformActiveUploadCount] = await tx.select({ count: count() }).from(videoUploadSessions).where(and(
-        eq(videoUploadSessions.status, 'uploading'),
+        inArray(videoUploadSessions.status, ['uploading','completed']),
         gt(videoUploadSessions.expiresAt, new Date()),
       ));
       if (Number(platformActiveUploadCount?.count || 0) >= maxActiveVideoUploads) return 'platform-limit' as const;
@@ -823,11 +809,15 @@ router.put(
   }
 );
 
-router.post('/lessons/:lessonId/video-uploads/:uploadId/complete', async (req: Request, res: Response) => {
+router.post('/lessons/:lessonId/video-uploads/:uploadId/complete', resourceLock('video-upload'), async (req: Request, res: Response) => {
   const lessonId = req.params.lessonId;
+  if (!(await getOwnedLesson(lessonId, req))) return res.status(404).json({ message: 'Lesson not found.' });
   const session = await getOwnedUpload(lessonId, req.params.uploadId, req);
-    if (!session) return res.status(404).json({ message: 'Upload session not found or expired.' });
-    if (!(await getOwnedLesson(lessonId, req))) return res.status(404).json({ message: 'Lesson not found.' });
+    if (!session) {
+      const [existing]=await db.select().from(videoJobs).where(and(eq(videoJobs.lessonId,lessonId),eq(videoJobs.generationId,req.params.uploadId)));
+      if(existing)return res.status(existing.status==='done'?200:202).json({message:'Upload already received.',jobId:existing.generationId,status:existing.status});
+      return res.status(404).json({ message: 'Upload session not found or expired.' });
+    }
     try {
     if (session.status === 'uploading') {
       let objectAlreadyCompleted = false;
@@ -867,13 +857,14 @@ router.post('/lessons/:lessonId/video-uploads/:uploadId/complete', async (req: R
       await db.update(videoUploadSessions).set({ status: 'completed' }).where(eq(videoUploadSessions.id, session.id));
     }
 
-    const [existing] = await db.select({ id: videoJobs.id }).from(videoJobs).where(eq(videoJobs.lessonId, lessonId)).limit(1);
-    if (existing) {
-      await db.update(videoJobs).set({ status: 'pending', errorMsg: null, updatedAt: new Date() }).where(eq(videoJobs.lessonId, lessonId));
-    } else {
-      await db.insert(videoJobs).values({ lessonId, status: 'pending' });
-    }
-    const job = await videoQueue.add('transcode', { lessonId, minioKey: session.storageKey }, { jobId: session.id });
+    await db.execute(sql`INSERT INTO media_storage_usage(generation_id,lesson_id,instructor_id,organization_id,bytes,hls_prefix) VALUES(${session.id},${lessonId},${req.user!.id},${req.organization?.id??null},${session.fileSize+2*1024**3},${'lessons/'+lessonId+'/'+session.id+'/'}) ON CONFLICT(generation_id) DO NOTHING`);
+    await db.transaction(async tx=>{
+      const [previous]=await tx.select().from(videoJobs).where(eq(videoJobs.lessonId,lessonId)).for('update');
+      if(previous?.rawKey && previous.generationId!==session.id) await tx.execute(sql`INSERT INTO object_cleanup_tasks(bucket,prefix,available_at) VALUES(${RAW_VIDEO_BUCKET},${previous.rawKey},now()+interval '1 hour')`);
+      await tx.insert(videoJobs).values({ lessonId, status: 'pending', generationId:session.id, rawKey:session.storageKey })
+        .onConflictDoUpdate({ target: videoJobs.lessonId, set: {status:'pending',generationId:session.id,rawKey:session.storageKey,errorMsg:null,updatedAt:new Date()}, setWhere:sql`${videoJobs.generationId} IS DISTINCT FROM ${session.id}::uuid` });
+    });
+    const job = await videoQueue.add('transcode', { lessonId, minioKey: session.storageKey, generationId:session.id }, { jobId: session.id });
     await db.delete(videoUploadSessions).where(eq(videoUploadSessions.id, session.id));
     return res.status(202).json({ message: 'Video upload received, transcoding started.', jobId: job.id });
   } catch (err) {
@@ -882,11 +873,12 @@ router.post('/lessons/:lessonId/video-uploads/:uploadId/complete', async (req: R
   }
 });
 
-router.delete('/lessons/:lessonId/video-uploads/:uploadId', async (req: Request, res: Response) => {
+router.delete('/lessons/:lessonId/video-uploads/:uploadId', resourceLock('video-upload'), async (req: Request, res: Response) => {
   const lessonId = req.params.lessonId;
   const session = await getOwnedUpload(lessonId, req.params.uploadId, req);
   if (!session) return res.status(404).json({ message: 'Upload session not found or expired.' });
   if (!(await getOwnedLesson(lessonId, req))) return res.status(404).json({ message: 'Lesson not found.' });
+  if (session.status === 'completed') return res.status(409).json({message:'This upload is saved. Retry completing it to schedule processing.'});
   if (session.status === 'uploading') {
     await minioClient.send(new AbortMultipartUploadCommand({
       Bucket: RAW_VIDEO_BUCKET, Key: session.storageKey, UploadId: session.multipartUploadId,
@@ -935,7 +927,7 @@ router.get('/lessons/:lessonId/video-status', async (req: Request, res: Response
 
 // Re-run only the transcript step (Whisper + embeddings) for an already
 // transcoded video whose transcript failed. Uses the kept raw upload.
-router.post('/lessons/:lessonId/retry-transcript', async (req: Request, res: Response) => {
+router.post('/lessons/:lessonId/retry-transcript', resourceLock('transcript-retry'), async (req: Request, res: Response) => {
   try {
     const instructorId = req.user!.id;
     const lessonId = z.string().uuid().safeParse(req.params.lessonId);
@@ -955,7 +947,7 @@ router.post('/lessons/:lessonId/retry-transcript', async (req: Request, res: Res
       return res.status(409).json({ message: 'Only a failed transcript can be retried' });
     }
 
-    const [rawKey] = await listRawVideoKeys(lessonId.data);
+    const rawKey = jobRows[0].rawKey ?? (await listRawVideoKeys(lessonId.data))[0];
     if (!rawKey) {
       return res.status(409).json({ message: 'The original video file is no longer available. Please re-upload the video.' });
     }
@@ -964,7 +956,7 @@ router.post('/lessons/:lessonId/retry-transcript', async (req: Request, res: Res
       .update(videoJobs)
       .set({ status: 'transcribed', errorMsg: null, updatedAt: new Date() })
       .where(eq(videoJobs.lessonId, lessonId.data));
-    await videoQueue.add('transcribe', { lessonId: lessonId.data, minioKey: rawKey, transcriptOnly: true });
+    await videoQueue.add('transcribe', { lessonId: lessonId.data, minioKey: rawKey, generationId:jobRows[0].generationId ?? undefined, transcriptOnly: true });
 
     return res.status(202).json({ status: 'transcribed', message: 'Transcript retry started' });
   } catch (err) {
@@ -974,13 +966,13 @@ router.post('/lessons/:lessonId/retry-transcript', async (req: Request, res: Res
 });
 
 const quizQuestionSchema = z.object({
-  questionText: z.string().min(1),
-  optionA: z.string().min(1),
-  optionB: z.string().min(1),
-  optionC: z.string().min(1),
-  optionD: z.string().min(1),
+  questionText: z.string().min(1).max(4000),
+  optionA: z.string().min(1).max(2000),
+  optionB: z.string().min(1).max(2000),
+  optionC: z.string().min(1).max(2000),
+  optionD: z.string().min(1).max(2000),
   correctOption: z.enum(['a', 'b', 'c', 'd']),
-  explanation: z.string().optional().nullable(),
+  explanation: z.string().max(8000).optional().nullable(),
   position: z.number().int().min(0).optional(),
 });
 
@@ -1021,6 +1013,11 @@ router.post('/lessons/:lessonId/quiz', async (req: Request, res: Response) => {
     const { title, questions } = parsed.data;
 
     const created = await db.transaction(async (tx) => {
+      await tx.select({id:courses.id}).from(courses).where(eq(courses.id,ownership.lesson.courseId)).for('update');
+      const activeExams = await tx.execute(sql`SELECT id FROM exam_assignments WHERE course_id=${ownership.lesson.courseId} AND result IS NULL AND expires_at>now() LIMIT 1`);
+      if (activeExams.rows.length) throw Object.assign(new Error('An exam is active; retry after it is submitted or expires'), {status:409});
+      const history=await tx.select({id:quizAttempts.id}).from(quizAttempts).where(eq(quizAttempts.lessonId,lessonId)).limit(1);
+      if(history.length) throw Object.assign(new Error('Quiz has attempt history; preserve it instead of replacing it'),{status:409});
       await tx.delete(quizzes).where(eq(quizzes.lessonId, lessonId));
 
       const quizRows = await tx
@@ -1064,6 +1061,7 @@ router.post('/lessons/:lessonId/quiz', async (req: Request, res: Response) => {
       },
     });
   } catch (err) {
+    if (err instanceof Error && 'status' in err && err.status===409) return res.status(409).json({message:err.message});
     console.error('save quiz error', err);
     return res.status(500).json({ message: 'Internal server error' });
   }

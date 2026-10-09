@@ -219,7 +219,6 @@ require_env_value WHISPER_API_KEY
   echo "[Nudra] ERROR: start.sh is for development only; set NODE_ENV=development in backend/.env."
   exit 1
 }
-require_env_value RESEND_API_KEY
 PROXY_DIR="$ROOT_DIR/deepseek-web-to-api-main"
 if [ ! -x "$PROXY_DIR/.venv/bin/python" ]; then
   echo "[Nudra] ERROR: DeepSeek proxy virtual environment is missing. Create it and install deepseek-web-to-api-main/requirements.txt."

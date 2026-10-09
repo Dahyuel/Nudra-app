@@ -55,16 +55,19 @@ router.post('/', requireAuth, requireRole('admin'), async (req: Request, res: Re
       )).limit(1))[0]
       : undefined;
     if (parsed.data.managerEmail && !manager) return res.status(404).json({ message: 'Manager account not found.' });
-    const [org] = await db.insert(organizations).values({
+    const org = await db.transaction(async tx => {
+    const [org] = await tx.insert(organizations).values({
       name: parsed.data.name,
       slug: parsed.data.slug,
       ownerId: manager?.id ?? req.user!.id,
     }).returning();
-    await db.insert(orgMemberships).values({
+    await tx.insert(orgMemberships).values({
       orgId: org.id,
       userId: manager?.id ?? req.user!.id,
       role: 'organization_manager',
       status: 'active',
+    });
+    return org;
     });
     return res.status(201).json({ organization: org });
   } catch (err) {
@@ -314,7 +317,8 @@ router.post('/:orgId/courses', requireAuth, async (req: Request, res: Response) 
     eq(orgMemberships.role, 'instructor'), eq(orgMemberships.status, 'active'),
     eq(users.organizationId, req.params.orgId), eq(users.role, 'instructor'))).limit(1);
   if (!membership) return res.status(400).json({ message: 'The selected instructor is not an active member of this organization.' });
-  const [course] = await db.insert(courses).values({
+  const course = await db.transaction(async tx => {
+  const [course] = await tx.insert(courses).values({
     instructorId: parsed.data.instructorId, organizationId: req.params.orgId, title: parsed.data.title,
     description: parsed.data.description, category: parsed.data.category, level: parsed.data.level,
     deliveryMode: parsed.data.deliveryMode, price: parsed.data.deliveryMode === 'offline' ? '0' : String(parsed.data.price ?? 0),
@@ -323,7 +327,9 @@ router.post('/:orgId/courses', requireAuth, async (req: Request, res: Response) 
     capacity: parsed.data.capacity ?? null,
     isPublished: false, approvalStatus: 'approved',
   }).returning();
-  await db.insert(courseSections).values({ courseId: course.id, title: 'Course content', position: 1 });
+  await tx.insert(courseSections).values({ courseId: course.id, title: 'Course content', position: 1 });
+  return course;
+  });
   return res.status(201).json({ course });
 });
 
@@ -442,92 +448,28 @@ router.post('/:orgId/instructors/invite', requireAuth, async (req: Request, res:
   if (!organizationExists) return res.status(404).json({ message: 'Organization not found.' });
   const parsed = z.object({ email: z.string().trim().email(), name: z.string().trim().min(2).max(255).optional().or(z.literal('')) }).safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ message: 'Enter a valid instructor name and email.' });
+  if (!process.env.RESEND_API_KEY) return res.status(503).json({message:'Invitation email is unavailable.'});
   const email = parsed.data.email.toLowerCase();
-  let [instructor] = await db.select({ id: users.id, name: users.name, email: users.email,
-    role: users.role, instructorStatus: users.instructorStatus }).from(users).where(and(
-    eq(users.email, email), eq(users.organizationId, req.params.orgId),
-  )).limit(1);
-  let setupToken: string | undefined;
-  let createdAccount = false;
-  if (!instructor) {
-    const instructorName = parsed.data.name?.trim();
-    if (!instructorName) return res.status(400).json({ message: 'Enter the instructor name to create a new account.' });
-    const randomPassword = randomBytes(32).toString('base64url');
-    const passwordHash = await bcrypt.hash(randomPassword, 12);
-    setupToken = randomBytes(32).toString('base64url');
-    try {
-      instructor = await db.transaction(async (tx) => {
-        const [created] = await tx.insert(users).values({ name: instructorName, email,
-          organizationId: req.params.orgId, passwordHash, role: 'instructor',
-          instructorStatus: 'approved', mustChangePassword: true }).returning({
-          id: users.id, name: users.name, email: users.email, role: users.role,
-          instructorStatus: users.instructorStatus,
-        });
-        await tx.insert(passwordResetTokens).values({ userId: created.id,
-          tokenHash: createHash('sha256').update(setupToken!).digest('hex'),
-          expiresAt: new Date(Date.now() + 30 * 60 * 1000) });
-        return created;
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : '';
-      if (message.includes('duplicate key')) return res.status(409).json({ message: 'An account for this email already exists in this organization. Reload and try again.' });
-      throw err;
+  const passwordHash=await bcrypt.hash(randomBytes(32).toString('base64url'),12);
+  const setupToken=randomBytes(32).toString('base64url');
+  const membership=await db.transaction(async tx => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${req.params.orgId+':'+email}))`);
+    const [org]=await tx.select({name:organizations.name,slug:organizations.slug}).from(organizations).where(eq(organizations.id,req.params.orgId)).for('update');
+    if(!org)throw Object.assign(new Error('Organization not found.'),{status:404});
+    let [instructor]=await tx.select().from(users).where(and(eq(users.email,email),eq(users.organizationId,req.params.orgId))).limit(1);
+    const created=!instructor;
+    if(!instructor) {
+      if(!parsed.data.name)throw Object.assign(new Error('Enter the instructor name.'),{status:400});
+      [instructor]=await tx.insert(users).values({name:parsed.data.name,email,passwordHash,organizationId:req.params.orgId,role:'instructor',instructorStatus:'approved',mustChangePassword:true}).returning();
+      await tx.insert(passwordResetTokens).values({userId:instructor.id,tokenHash:createHash('sha256').update(setupToken).digest('hex'),expiresAt:new Date(Date.now()+30*60*1000)});
     }
-    createdAccount = true;
-  }
-  if (instructor.role !== 'instructor' || (instructor.instructorStatus !== null && instructor.instructorStatus !== 'approved')) {
-    if (createdAccount) {
-      await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, instructor.id));
-      await db.delete(users).where(and(eq(users.id, instructor.id), eq(users.organizationId, req.params.orgId)));
-    }
-    return res.status(409).json({ message: 'This email already belongs to an account that is not an approved instructor.' });
-  }
-  const [membership] = await db.insert(orgMemberships).values({
-    orgId: req.params.orgId, userId: instructor.id, role: 'instructor', status: 'invited',
-  }).onConflictDoNothing().returning();
-  if (!membership) {
-    if (createdAccount) {
-      await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, instructor.id));
-      await db.delete(users).where(and(eq(users.id, instructor.id), eq(users.organizationId, req.params.orgId)));
-    }
-    return res.status(409).json({ message: 'This person already belongs to the organization or has a pending invitation.' });
-  }
-  if (createdAccount && !process.env.RESEND_API_KEY) {
-    await db.delete(orgMemberships).where(eq(orgMemberships.id, membership.id));
-    await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, instructor.id));
-    await db.delete(users).where(and(eq(users.id, instructor.id), eq(users.organizationId, req.params.orgId)));
-    return res.status(503).json({ message: 'Instructor invitation email is unavailable. Configure Resend and try again.' });
-  }
-  const [org] = await db.select({ name: organizations.name, slug: organizations.slug }).from(organizations)
-    .where(eq(organizations.id, req.params.orgId)).limit(1);
-  if (!org) {
-    await db.delete(orgMemberships).where(and(eq(orgMemberships.id, membership.id), eq(orgMemberships.orgId, req.params.orgId)));
-    if (createdAccount) {
-      await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, instructor.id));
-      await db.delete(users).where(and(eq(users.id, instructor.id), eq(users.organizationId, req.params.orgId)));
-    }
-    return res.status(404).json({ message: 'Organization not found.' });
-  }
-  try {
-    await sendOrganizationInstructorInviteEmail({
-      name: instructor.name,
-      email: instructor.email,
-      organizationName: org!.name,
-      organizationSlug: org!.slug,
-      membershipId: membership.id,
-      setupToken,
-    });
-    if (createdAccount) await db.update(orgMemberships).set({ status: 'active' }).where(and(
-      eq(orgMemberships.id, membership.id), eq(orgMemberships.orgId, req.params.orgId),
-    ));
-  } catch (err) {
-    console.warn('organization instructor invitation email failed', err);
-    await db.delete(orgMemberships).where(and(eq(orgMemberships.id, membership.id), eq(orgMemberships.orgId, req.params.orgId)));
-    if (setupToken) await db.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, instructor.id));
-    if (createdAccount) await db.delete(users).where(and(eq(users.id, instructor.id), eq(users.organizationId, req.params.orgId)));
-    return res.status(503).json({ message: 'Could not send the instructor invitation. No organization access was granted; try again.' });
-  }
-  return res.status(201).json({ membership });
+    if(instructor.role!=='instructor'||(instructor.instructorStatus!==null&&instructor.instructorStatus!=='approved'))throw Object.assign(new Error('An approved instructor account is required.'),{status:409});
+    const [membership]=await tx.insert(orgMemberships).values({orgId:req.params.orgId,userId:instructor.id,role:'instructor',status:created?'active':'invited'}).onConflictDoNothing().returning();
+    if(!membership)throw Object.assign(new Error('Membership or invitation already exists.'),{status:409});
+    await sendOrganizationInstructorInviteEmail({name:instructor.name,email,organizationName:org.name,organizationSlug:org.slug,membershipId:membership.id,setupToken:created?setupToken:undefined},tx);
+    return membership;
+  });
+  return res.status(201).json({membership});
 });
 
 router.put('/:orgId/branding', requireAuth, async (req: Request, res: Response) => {

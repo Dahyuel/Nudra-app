@@ -21,7 +21,7 @@ dump_file="$backup_dir/nudra-public-$(date -u +%Y%m%dT%H%M%SZ).dump"
 pg_dump --format=custom --no-owner --no-acl --schema=public \
   --file="$dump_file" "$SOURCE_DATABASE_URL"
 pg_restore --list "$dump_file" >/dev/null
-sha256sum "$dump_file" > "$dump_file.sha256"
+(cd "$(dirname "$dump_file")" && sha256sum "$(basename "$dump_file")") > "$dump_file.sha256"
 chmod 600 "$dump_file" "$dump_file.sha256"
 printf 'Export complete: %s\n' "$dump_file"
 printf 'Copy this file and its .sha256 companion to the VPS over SSH.\n'

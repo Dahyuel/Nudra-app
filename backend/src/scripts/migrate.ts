@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { Pool, type PoolClient } from 'pg';
 
 const BASELINE_MIGRATION = '0000_fantastic_skullbuster.sql';
@@ -55,6 +56,7 @@ async function prepareBaseline(client: PoolClient, files: MigrationFile[]) {
   const existing = Object.values(rows[0] as Record<string, boolean>).filter(Boolean).length;
 
   if (existing === 5) {
+    if (process.env.MIGRATION_ADOPT_BASELINE !== 'true') throw new Error('Untracked existing schema: validate its full schema against the baseline, then explicitly set MIGRATION_ADOPT_BASELINE=true.');
     // A restored pre-migration Nudra database already contains the baseline schema.
     await client.query('INSERT INTO public.nudra_schema_migrations(name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [baseline.name]);
     console.log(`Recorded existing schema baseline ${baseline.name}`);
@@ -77,16 +79,25 @@ async function main() {
     await client.query('SELECT pg_advisory_lock($1, $2)', [ADVISORY_LOCK_NAMESPACE, ADVISORY_LOCK_ID]);
     lockAcquired = true;
     await client.query('CREATE TABLE IF NOT EXISTS public.nudra_schema_migrations (name text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())');
+    await client.query('ALTER TABLE public.nudra_schema_migrations ADD COLUMN IF NOT EXISTS checksum text');
     await prepareBaseline(client, files);
 
     for (const name of files) {
-      const { rows } = await client.query('SELECT 1 FROM public.nudra_schema_migrations WHERE name = $1', [name.name]);
-      if (rows.length) continue;
       const sql = await fs.readFile(path.join(migrationsDirectory, name.name), 'utf8');
+      const checksum = createHash('sha256').update(sql).digest('hex');
+      const { rows } = await client.query('SELECT checksum FROM public.nudra_schema_migrations WHERE name = $1', [name.name]);
+      if (rows.length) {
+        if (rows[0].checksum && rows[0].checksum !== checksum) throw new Error(`Applied migration content changed: ${name.name}`);
+        if (!rows[0].checksum) {
+          if (process.env.MIGRATION_ADOPT_CHECKSUMS !== 'true') throw new Error('Legacy migration history needs reviewed checksum adoption: set MIGRATION_ADOPT_CHECKSUMS=true once after comparing the deployed SQL history.');
+          await client.query('UPDATE public.nudra_schema_migrations SET checksum=$2 WHERE name=$1', [name.name,checksum]);
+        }
+        continue;
+      }
       await client.query('BEGIN');
       try {
         await client.query(sql);
-        await client.query('INSERT INTO public.nudra_schema_migrations(name) VALUES ($1)', [name.name]);
+        await client.query('INSERT INTO public.nudra_schema_migrations(name,checksum) VALUES ($1,$2)', [name.name,checksum]);
         await client.query('COMMIT');
         console.log(`Applied ${name.name}`);
       } catch (error) {

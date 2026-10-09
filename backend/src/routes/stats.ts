@@ -1,5 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { eq, and, desc, count, gte, isNull } from 'drizzle-orm';
+import { eq, and, desc, count, gte, isNull, sql } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import { db } from '../db';
 import {
@@ -174,6 +174,7 @@ router.get('/certificates', requireAuth, requireRole('student'), async (req: Req
       .leftJoin(users, eq(courses.instructorId, users.id))
       .where(and(
         eq(certificates.studentId, studentId),
+        sql`EXISTS(SELECT 1 FROM enrollments e WHERE e.course_id=${certificates.courseId} AND e.student_id=${certificates.studentId} AND e.status='active') AND EXISTS(SELECT 1 FROM lessons l WHERE l.course_id=${certificates.courseId}) AND NOT EXISTS(SELECT 1 FROM lessons l LEFT JOIN lesson_progress p ON p.lesson_id=l.id AND p.student_id=${certificates.studentId} WHERE l.course_id=${certificates.courseId} AND (p.completed IS DISTINCT FROM true OR l.duration_seconds IS NULL OR p.watched_seconds<ceil(l.duration_seconds*0.9)))`,
         courseRealm(req.organization?.id ?? null),
       ))
       .orderBy(desc(certificates.issuedAt));
@@ -207,6 +208,7 @@ router.get('/certificates/:certCode/pdf', requireAuth, async (req: Request, res:
       .where(and(
         eq(certificates.certCode, certCode),
         eq(certificates.studentId, userId),
+        sql`EXISTS(SELECT 1 FROM enrollments e WHERE e.course_id=${certificates.courseId} AND e.student_id=${certificates.studentId} AND e.status='active') AND EXISTS(SELECT 1 FROM lessons l WHERE l.course_id=${certificates.courseId}) AND NOT EXISTS(SELECT 1 FROM lessons l LEFT JOIN lesson_progress p ON p.lesson_id=l.id AND p.student_id=${certificates.studentId} WHERE l.course_id=${certificates.courseId} AND (p.completed IS DISTINCT FROM true OR l.duration_seconds IS NULL OR p.watched_seconds<ceil(l.duration_seconds*0.9)))`,
         courseRealm(req.organization?.id ?? null),
       ))
       .limit(1);

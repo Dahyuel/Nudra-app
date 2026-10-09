@@ -1,7 +1,7 @@
 import React, { FormEvent, useCallback, useEffect, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { Render } from '@puckeditor/core/rsc';
-import { Check, LoaderCircle, Plus, X, BookOpen } from 'lucide-react';
+import { ArrowRight, CalendarDays, Check, ExternalLink, LoaderCircle, Plus, X, BookOpen } from 'lucide-react';
 import api from '../lib/api';
 import { useAuth } from '../context/AuthContext';
 import { LandingPage } from './LandingPage';
@@ -96,17 +96,32 @@ export const OrganizationPortalPage: React.FC = () => {
       <h2 className="text-lg font-semibold">Instructor invitation</h2>
       <p className="mt-2 text-gray-600">You were invited to teach in {organization.name}.</p>
       <button disabled={busy} className={`${button} mt-4`} onClick={() => void act(`/api/organizations/${organization.id}/invitations/${membership.id}/accept`)}>Accept invitation</button>
-    </section> : membership?.status === 'active' ? <section className="space-y-4">
-      <h2 className="text-xl font-bold">Courses for {organization.name}</h2>
-      {data.courses.length ? <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {data.courses.map((course) => <Link key={course.id} to={`/course/${course.id}?org=${encodeURIComponent(organization.slug)}`} className={`${panel} transition hover:-translate-y-0.5`}>
-          {course.thumbnailUrl && <img src={course.thumbnailUrl} alt="" className="mb-4 aspect-video w-full rounded-xl object-cover" />}
-          <p className="text-xs font-semibold uppercase tracking-wide text-[#2D6A4F]">{course.category} · {course.deliveryMode === 'offline' ? 'Offline booking' : 'Online'}</p>
-          <h3 className="mt-2 font-bold">{course.title}</h3><p className="mt-2 line-clamp-2 text-sm text-gray-600">{course.description}</p>
-          {course.deliveryMode === 'offline' && <p className="mt-2 text-xs text-gray-500">{course.location || 'Location provided after booking'}{course.scheduleText ? ` · ${course.scheduleText}` : ''}</p>}
-          {course.deliveryMode === 'offline' && course.bookingUrl && <a href={course.bookingUrl} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()} className="mt-3 inline-flex rounded-lg bg-[#2D6A4F] px-3 py-2 text-xs font-semibold text-white">Book this course</a>}
-        </Link>)}
-      </div> : <div className={panel}><p className="text-gray-600">There are no published organization courses yet.</p></div>}
+    </section> : membership?.status === 'active' ? <section className="organization-student-home space-y-7">
+      <div className="relative isolate overflow-hidden rounded-[2rem] bg-[var(--org-primary)] px-6 py-8 text-white shadow-[0_18px_45px_rgba(20,55,37,0.12)] sm:px-9 sm:py-10">
+        <div className="pointer-events-none absolute -right-14 -top-24 -z-10 h-64 w-64 rounded-full border-[34px] border-white/[0.08]" />
+        <p className="text-sm font-semibold text-white/75">Your organization learning space</p>
+        <div className="mt-2 flex flex-col justify-between gap-5 sm:flex-row sm:items-end">
+          <div><h2 className="text-3xl font-bold tracking-tight sm:text-4xl">Learn with {organization.name}</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-white/75">Explore courses shared by your organization and keep your learning moving forward.</p></div>
+          <Link to={`/bookings?org=${encodeURIComponent(organization.slug)}`} className="inline-flex w-fit shrink-0 items-center gap-2 rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-[var(--org-primary)] transition hover:bg-white/90"><CalendarDays size={16} /> My bookings</Link>
+        </div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3" aria-label="Organization course summary">
+        {[['Available courses', data.courses.length], ['Online learning', data.courses.filter((course) => course.deliveryMode === 'online').length], ['In-person courses', data.courses.filter((course) => course.deliveryMode === 'offline').length]].map(([label, count]) => <div key={label} className="rounded-2xl border border-gray-100 bg-white p-4 shadow-sm"><p className="text-sm text-gray-500">{label}</p><p className="mt-1 text-2xl font-bold text-gray-900">{count}</p></div>)}
+      </div>
+      <div className="flex flex-wrap items-end justify-between gap-3"><div><p className="text-sm font-semibold text-[var(--org-primary)]">Made for your community</p><h2 className="mt-1 text-2xl font-bold text-gray-900">Your courses</h2></div><span className="text-sm text-gray-500">{data.courses.length} {data.courses.length === 1 ? 'course' : 'courses'}</span></div>
+      {data.courses.length ? <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+        {data.courses.map((course) => <article key={course.id} className="group overflow-hidden rounded-3xl border border-gray-100 bg-white shadow-sm transition hover:-translate-y-1 hover:shadow-lg">
+          <Link to={`/course/${course.id}?org=${encodeURIComponent(organization.slug)}`} className="block">
+            {course.thumbnailUrl ? <img src={course.thumbnailUrl} alt="" loading="lazy" className="aspect-[16/9] w-full object-cover transition duration-300 group-hover:scale-[1.02]" /> : <div className="grid aspect-[16/9] place-items-center bg-gradient-to-br from-emerald-50 via-white to-emerald-100 text-[var(--org-primary)]"><BookOpen size={42} strokeWidth={1.5} /></div>}
+            <div className="p-5"><span className="inline-flex rounded-full bg-emerald-50 px-3 py-1 text-[11px] font-bold uppercase tracking-wide text-[var(--org-primary)]">{course.deliveryMode === 'offline' ? 'In person' : 'Online'} · {course.category}</span>
+              <h3 className="mt-3 line-clamp-2 text-lg font-bold leading-6 text-gray-900 group-hover:text-[var(--org-primary)]">{course.title}</h3><p className="mt-2 line-clamp-2 min-h-10 text-sm leading-5 text-gray-600">{course.description}</p>
+              {course.deliveryMode === 'offline' && <p className="mt-3 text-xs text-gray-500">{course.location || 'Location shared after booking'}{course.scheduleText ? ` · ${course.scheduleText}` : ''}</p>}
+              <span className="mt-5 inline-flex items-center gap-2 text-sm font-bold text-[var(--org-primary)]">{course.deliveryMode === 'offline' ? 'View course details' : 'Start learning'} <ArrowRight size={15} /></span>
+            </div>
+          </Link>
+          {course.deliveryMode === 'offline' && <div className="border-t border-gray-100 px-5 py-3"><Link to={`/bookings?org=${encodeURIComponent(organization.slug)}`} className="text-xs font-semibold text-[var(--org-primary)] hover:underline">Browse available sessions</Link>{course.bookingUrl && <a href={course.bookingUrl} target="_blank" rel="noreferrer" className="ml-4 text-xs font-semibold text-gray-500 hover:underline">External booking <ExternalLink size={12} className="inline" /></a>}</div>}
+        </article>)}
+      </div> : <div className="rounded-3xl border border-dashed border-gray-300 bg-white px-6 py-12 text-center"><span className="mx-auto grid h-14 w-14 place-items-center rounded-2xl bg-emerald-50 text-[var(--org-primary)]"><BookOpen size={27} /></span><h3 className="mt-4 font-bold text-gray-900">Your organization is preparing courses</h3><p className="mx-auto mt-2 max-w-md text-sm leading-6 text-gray-500">Published courses will appear here when they are ready. You can check your bookings or come back later.</p></div>}
     </section> : membership?.status === 'pending' ? <section className={panel}>
       <h2 className="text-lg font-semibold">Request submitted</h2><p className="mt-2 text-gray-600">The organization manager needs to approve your request before you can view courses.</p>
     </section> : user?.role === 'student' ? <section className={panel}>

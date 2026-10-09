@@ -3,12 +3,13 @@ import Redis from 'ioredis';
 import type { Options, Store, ClientRateLimitInfo } from 'express-rate-limit';
 import { getRedisUrl } from '../lib/redisConnection';
 
-const redis = new Redis(getRedisUrl(), {
+export const rateLimitRedis = new Redis(getRedisUrl(), {
   maxRetriesPerRequest: 1,
   enableOfflineQueue: true,
   connectTimeout: 2500,
   retryStrategy: () => 1000,
 });
+const redis = rateLimitRedis;
 
 redis.on('error', (err) => {
   console.warn('rate limit redis error', err);
@@ -74,11 +75,8 @@ export function createRateLimiter({
       }
 
       const key = `${keyPrefix}:${userId}`;
-      const count = await redis.incr(key);
-
-      if (count === 1) {
-        await redis.expire(key, windowSeconds);
-      }
+      const result = await redis.eval(INCREMENT_SCRIPT, 1, key, String(windowSeconds * 1000)) as [number, number];
+      const count = Number(result[0]);
 
       if (count > maxRequests) {
         return res.status(429).json({ error: errorMessage, retryAfter: windowSeconds });
@@ -87,7 +85,7 @@ export function createRateLimiter({
       return next();
     } catch (err) {
       console.warn('rate limiter error', err);
-      return next();
+      return res.status(503).json({ message: 'Request limits could not be verified. Try again shortly.' });
     }
   };
 }

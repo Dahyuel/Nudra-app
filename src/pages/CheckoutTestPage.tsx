@@ -9,7 +9,8 @@ interface Order {
   courseTitle: string;
   amount: number;
   currency: string;
-  status: 'pending' | 'paid' | 'failed' | 'cancelled';
+  status: 'pending' | 'paid' | 'failed' | 'cancelled' | 'expired';
+  provider: string;
 }
 
 /** Stand-in for a payment provider's page while PAYMENT_PROVIDER=test. No real money moves. */
@@ -24,11 +25,11 @@ export const CheckoutTestPage: React.FC = () => {
     enabled: !!orderId,
   });
 
-  const complete = async (outcome: 'paid' | 'failed') => {
+  const complete = async (outcome: 'paid' | 'failed' | 'cancelled' | 'expired') => {
     setBusy(true);
     setError(null);
     try {
-      await api.post(`/api/payments/test/${orderId}/complete`, { outcome });
+      await api.post(`/api/payments/mock/${orderId}/complete`, { outcome });
       await queryClient.invalidateQueries({ queryKey: ['order', orderId] });
       queryClient.invalidateQueries({ queryKey: ['course', order?.courseId] });
     } catch (err: any) {
@@ -42,7 +43,7 @@ export const CheckoutTestPage: React.FC = () => {
     <div className="min-h-screen bg-[#F8FAF9] flex items-center justify-center p-4">
       <div className="w-full max-w-md bg-white rounded-2xl p-6 border border-gray-100 shadow-md space-y-5">
         <p className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-          TEST PAYMENT: simulated checkout, no real money is charged.
+          Paymob demo — simulated payment. No money is charged and no card details are needed.
         </p>
         {isLoading || !order ? (
           <p className="text-sm text-gray-500">{isLoading ? 'Loading order...' : 'Order not found.'}</p>
@@ -54,8 +55,8 @@ export const CheckoutTestPage: React.FC = () => {
                 {order.amount} {order.currency}
               </p>
             </div>
-            {order.status === 'pending' ? (
-              <div className="flex gap-2">
+            {!['test','paymob_mock'].includes(order.provider) ? <p role="alert">This order does not use the demo provider.</p> : order.status === 'pending' ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <button
                   onClick={() => complete('paid')}
                   disabled={busy}
@@ -70,10 +71,12 @@ export const CheckoutTestPage: React.FC = () => {
                 >
                   Simulate failure
                 </button>
+                <button type="button" onClick={() => complete('cancelled')} disabled={busy} className="min-h-11 rounded-xl border border-gray-300 px-4 text-sm font-semibold disabled:opacity-60">Cancel checkout</button>
+                <button type="button" onClick={() => complete('expired')} disabled={busy} className="min-h-11 rounded-xl border border-gray-300 px-4 text-sm font-semibold disabled:opacity-60">Simulate expiry</button>
               </div>
             ) : order.status === 'paid' ? (
               <div className="space-y-3">
-                <p className="text-sm font-semibold text-[#2D6A4F]">Payment confirmed. You're enrolled!</p>
+                <p className="text-sm font-semibold text-[#2D6A4F]">Demo payment succeeded. You’re enrolled in this demo environment.</p>
                 <Link to={`/course/${order.courseId}`} className="inline-block px-4 py-2.5 rounded-xl bg-[#2D6A4F] text-white text-sm font-bold">
                   Go to course
                 </Link>
@@ -86,7 +89,7 @@ export const CheckoutTestPage: React.FC = () => {
                 </Link>
               </div>
             )}
-            {error && <p className="text-xs font-semibold text-red-600">{error}</p>}
+            {error && <p role="alert" className="text-sm font-semibold text-red-600">{error}</p>}
           </>
         )}
       </div>

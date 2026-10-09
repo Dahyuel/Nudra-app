@@ -12,7 +12,8 @@ import { createHmac } from 'crypto';
  * or correlated across scopes by anyone who knows the user id.
  */
 export function generateAnonToken(userId: string, scopeId: string): string {
-  const secret = process.env.ANON_TOKEN_SALT || process.env.SESSION_SECRET || 'change-me';
+  const secret = process.env.ANON_TOKEN_SALT || process.env.SESSION_SECRET || 'development-anonymity-only';
+  if (process.env.NODE_ENV === 'production' && (!secret || secret.length < 32 || secret === 'development-anonymity-only')) throw new Error('A strong ANON_TOKEN_SALT is required');
   const input = `${userId}:${scopeId}`;
   const hash = createHmac('sha256', secret).update(input).digest('hex');
   const raw = hash.slice(0, 32);

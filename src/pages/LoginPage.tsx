@@ -9,6 +9,7 @@ export const LoginPage: React.FC = () => {
   const justReset = searchParams.get('reset') === '1';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [otp, setOtp] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -19,7 +20,7 @@ export const LoginPage: React.FC = () => {
     setError(null);
 
     try {
-      await login(email, password);
+      await login(email, password, otp);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -93,6 +94,10 @@ export const LoginPage: React.FC = () => {
           </div>
 
           {/* Remember Me Checkbox */}
+          <div>
+            <label htmlFor="admin-otp" className="block text-xs font-bold text-gray-700 mb-1.5">Authenticator code (administrators)</label>
+            <input id="admin-otp" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={otp} onChange={e=>setOtp(e.target.value.replace(/\D/g,''))} className="min-h-11 w-full px-4 border border-gray-200 rounded-xl focus:border-[#2D6A4F]" />
+          </div>
           <div className="flex items-center justify-between text-xs">
             <label className="flex items-center gap-2 cursor-pointer text-gray-600">
               <input
@@ -106,7 +111,7 @@ export const LoginPage: React.FC = () => {
           </div>
 
           {error && (
-            <p className="text-xs font-semibold text-red-600 text-center">{error}</p>
+            <p role="alert" className="text-xs font-semibold text-red-600 text-center">{error}</p>
           )}
 
           {/* Submit Button */}

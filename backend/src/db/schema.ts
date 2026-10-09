@@ -39,6 +39,7 @@ export const users = pgTable('users', {
   // reference-free avoids a circular type inference loop with organizations.ownerId.
   organizationId: uuid('organization_id'),
   email: varchar('email', { length: 255 }).notNull(),
+  emailVerifiedAt: timestamp('email_verified_at', {withTimezone:true}),
   passwordHash: varchar('password_hash', { length: 255 }).notNull(),
   role: roleEnum('role').notNull().default('student'),
   avatarUrl: text('avatar_url'),
@@ -174,6 +175,7 @@ export const notifications = pgTable('notifications', {
 
 export const sessions = pgTable('sessions', {
   id: uuid('id').primaryKey().defaultRandom(),
+  mfaVerified: boolean('mfa_verified').notNull().default(false),
   userId: uuid('user_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
@@ -279,6 +281,7 @@ export const lessons = pgTable('lessons', {
   title: varchar('title', { length: 255 }).notNull(),
   durationText: varchar('duration_text', { length: 255 }),
   videoUrl: text('video_url'),
+  durationSeconds: integer('duration_seconds'),
   isFree: boolean('is_free').notNull().default(false),
   position: integer('position').notNull(),
   createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -334,6 +337,8 @@ export const videoJobs = pgTable(
       .references(() => lessons.id, { onDelete: 'cascade' })
       .unique(),
     status: varchar('status', { length: 255 }).notNull().default('pending'),
+    generationId: uuid('generation_id'),
+    rawKey: text('raw_key'),
     hlsUrl: text('hls_url'),
     transcriptText: text('transcript_text'),
     transcriptSegments: text('transcript_segments'),
@@ -372,6 +377,7 @@ export const lessonProgress = pgTable(
       .notNull()
       .references(() => courses.id, { onDelete: 'cascade' }),
     watchedSeconds: integer('watched_seconds').notNull().default(0),
+    lastActivityAt: timestamp('last_activity_at', { withTimezone: true }).notNull().defaultNow(),
     completed: boolean('completed').notNull().default(false),
     completedAt: timestamp('completed_at'),
   },

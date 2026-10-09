@@ -1,9 +1,10 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { db } from '../db';
-import { enrollments, lessons, courseSections, users } from '../db/schema';
+import { enrollments, lessons, courseSections, users, courses } from '../db/schema';
 import { sendEnrollmentEmail } from './mailer';
 import { createNotification } from './notifications';
 
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type EnrollmentKind = 'online' | 'offline_semester';
 
 /**
@@ -19,7 +20,16 @@ export async function enrollStudent(
   course: { id: string; title: string },
   kind: EnrollmentKind = 'online',
 ) {
-  const [firstLesson] = await db
+  const result = await db.transaction(async tx => {
+  const [locked] = await tx.select().from(courses).where(eq(courses.id,course.id)).for('update');
+  if (!locked || !locked.isPublished || locked.approvalStatus !== 'approved') throw new Error('Course unavailable');
+  const [prior] = await tx.select().from(enrollments).where(and(eq(enrollments.studentId,studentId),eq(enrollments.courseId,course.id)));
+  if (prior?.status === 'active') return {created:false as const,enrollment:null};
+  if (kind === 'offline_semester' && locked.capacity !== null) {
+    const counts = await tx.execute(sql`SELECT count(*)::int AS value FROM enrollments WHERE course_id=${course.id} AND kind='offline_semester' AND status='active'`);
+    if (Number(counts.rows[0]?.value) >= locked.capacity) throw Object.assign(new Error('Course full'),{status:409});
+  }
+  const [firstLesson] = await tx
     .select({ id: lessons.id })
     .from(lessons)
     .innerJoin(courseSections, eq(lessons.sectionId, courseSections.id))
@@ -30,7 +40,7 @@ export async function enrollStudent(
   // The unique constraint is (studentId, courseId). A row that already exists
   // may have been cancelled earlier; reactivate it in place rather than
   // refusing. New rows get the requested kind + status 'active'.
-  const inserted = await db
+  const inserted = await tx
     .insert(enrollments)
     .values({ studentId, courseId: course.id, progress: 0, lastLessonId: firstLesson?.id ?? null, kind, status: 'active' })
     .onConflictDoUpdate({
@@ -41,13 +51,13 @@ export async function enrollStudent(
     .returning();
 
   if (inserted.length === 0) return { created: false as const, enrollment: null };
+  if (kind === 'offline_semester') await fanOutBookingsForEnrollment(studentId,course.id,tx);
+  const [student]=await tx.select({name:users.name,email:users.email}).from(users).where(eq(users.id,studentId)).limit(1);
+  if(student)await sendEnrollmentEmail(student,{title:course.title},tx);
+  return {created:true as const,enrollment:inserted[0]};
+  });
+  if (!result.created) return result;
 
-  const [student] = await db
-    .select({ name: users.name, email: users.email })
-    .from(users)
-    .where(eq(users.id, studentId))
-    .limit(1);
-  if (student) sendEnrollmentEmail(student, { title: course.title }).catch(console.warn);
   createNotification(
     studentId,
     'enrollment_confirmed',
@@ -56,7 +66,7 @@ export async function enrollStudent(
     `/course/${course.id}`
   ).catch(console.warn);
 
-  return { created: true as const, enrollment: inserted[0] };
+  return result;
 }
 
 /**
@@ -65,84 +75,27 @@ export async function enrollStudent(
  * the student is waitlisted (same rule the drop-in booking path uses).
  * Idempotent per (session_id, student_id) via the course_bookings UNIQUE.
  */
-export async function fanOutBookingsForEnrollment(studentId: string, courseId: string) {
-  // ON CONFLICT reactivates a previously-cancelled booking (e.g. the student
-  // left the course and re-enrolled). Existing confirmed/waitlisted bookings
-  // are left alone so an active drop-in isn't downgraded.
-  await db.execute(sql`
-    WITH target_sessions AS (
-      SELECT s.id, s.course_id, s.organization_id, s.capacity
-      FROM course_sessions s
-      WHERE s.course_id = ${courseId}
-        AND s.status = 'scheduled'
-        AND s.starts_at > now()
-    ), seat_counts AS (
-      SELECT s.id AS session_id,
-        COUNT(b.id) FILTER (WHERE b.status = 'confirmed')::int AS confirmed,
-        COALESCE(MAX(b.waitlist_position) FILTER (WHERE b.status = 'waitlisted'), 0)::int AS last_wait
-      FROM target_sessions s
-      LEFT JOIN course_bookings b ON b.session_id = s.id
-      GROUP BY s.id
-    )
-    INSERT INTO course_bookings
-      (session_id, course_id, organization_id, student_id, status, waitlist_position,
-       payment_method, payment_status)
-    SELECT ts.id, ts.course_id, ts.organization_id, ${studentId},
-      CASE WHEN sc.confirmed < ts.capacity THEN 'confirmed' ELSE 'waitlisted' END,
-      CASE WHEN sc.confirmed < ts.capacity THEN NULL ELSE sc.last_wait + 1 END,
-      'offline',
-      'pending'
-    FROM target_sessions ts JOIN seat_counts sc ON sc.session_id = ts.id
-    ON CONFLICT (session_id, student_id) DO UPDATE SET
-      status = EXCLUDED.status,
-      waitlist_position = EXCLUDED.waitlist_position,
-      payment_method = EXCLUDED.payment_method,
-      payment_status = EXCLUDED.payment_status,
-      cancelled_at = NULL,
-      booked_at = now(),
-      updated_at = now()
-    WHERE course_bookings.status = 'cancelled';
-  `);
+async function rosterStudent(tx: Tx,studentId:string,sessionId:string) {
+ const sessions = await tx.execute(sql`SELECT id,course_id,organization_id,capacity FROM course_sessions WHERE id=${sessionId} AND status='scheduled' AND starts_at>now() FOR UPDATE`);
+ const session = sessions.rows[0] as {id:string;course_id:string;organization_id:string|null;capacity:number}|undefined;
+ if (!session) return;
+ const prior = await tx.execute(sql`SELECT status FROM course_bookings WHERE session_id=${sessionId} AND student_id=${studentId}`);
+ if (prior.rows[0] && prior.rows[0].status !== 'cancelled') return;
+ const counts = await tx.execute(sql`SELECT count(*) FILTER(WHERE status='confirmed')::int AS confirmed,coalesce(max(waitlist_position) FILTER(WHERE status='waitlisted'),0)::int AS waiting FROM course_bookings WHERE session_id=${sessionId}`);
+ const stats=counts.rows[0] as {confirmed:number;waiting:number};const confirmed=stats.confirmed<session.capacity;
+ await tx.execute(sql`INSERT INTO course_bookings(session_id,course_id,organization_id,student_id,status,waitlist_position,payment_method,payment_status)
+ VALUES(${sessionId},${session.course_id},${session.organization_id},${studentId},${confirmed?'confirmed':'waitlisted'},${confirmed?null:stats.waiting+1},'offline','pending')
+ ON CONFLICT(session_id,student_id) DO UPDATE SET status=excluded.status,waitlist_position=excluded.waitlist_position,cancelled_at=NULL,booked_at=now(),updated_at=now() WHERE course_bookings.status='cancelled'`);
 }
-
-/**
- * Fan out confirmed bookings for a newly-created session to every active
- * offline_semester enrollee of its course. Called from the session-create
- * handler so the roster is populated the moment the session appears.
- * Idempotent per (session_id, student_id).
- */
-export async function fanOutEnrolleesToSession(sessionId: string, courseId: string, organizationId: string | null) {
-  await db.execute(sql`
-    WITH session_info AS (
-      SELECT id, capacity FROM course_sessions WHERE id = ${sessionId}
-    ), active_enrollees AS (
-      SELECT student_id FROM enrollments
-      WHERE course_id = ${courseId}
-        AND kind = 'offline_semester'
-        AND status = 'active'
-      ORDER BY enrolled_at ASC
-    ), numbered AS (
-      SELECT student_id, ROW_NUMBER() OVER ()::int AS rn FROM active_enrollees
-    )
-    INSERT INTO course_bookings
-      (session_id, course_id, organization_id, student_id, status, waitlist_position,
-       payment_method, payment_status)
-    SELECT ${sessionId}, ${courseId}, ${organizationId}, n.student_id,
-      CASE WHEN n.rn <= si.capacity THEN 'confirmed' ELSE 'waitlisted' END,
-      CASE WHEN n.rn <= si.capacity THEN NULL ELSE n.rn - si.capacity END,
-      'offline',
-      'pending'
-    FROM numbered n CROSS JOIN session_info si
-    ON CONFLICT (session_id, student_id) DO UPDATE SET
-      status = EXCLUDED.status,
-      waitlist_position = EXCLUDED.waitlist_position,
-      payment_method = EXCLUDED.payment_method,
-      payment_status = EXCLUDED.payment_status,
-      cancelled_at = NULL,
-      booked_at = now(),
-      updated_at = now()
-    WHERE course_bookings.status = 'cancelled';
-  `);
+export async function fanOutBookingsForEnrollment(studentId:string,courseId:string,executor?:Tx) {
+ const run=async(tx:Tx)=>{const sessions=await tx.execute(sql`SELECT id FROM course_sessions WHERE course_id=${courseId} AND status='scheduled' AND starts_at>now() ORDER BY id`);for(const s of sessions.rows as {id:string}[])await rosterStudent(tx,studentId,s.id);};
+ if(executor)return run(executor);
+ return db.transaction(async tx=>{await tx.select().from(courses).where(eq(courses.id,courseId)).for('update');await run(tx);});
+}
+export async function fanOutEnrolleesToSession(sessionId:string,courseId:string,_organizationId:string|null,executor?:Tx) {
+ const run=async(tx:Tx)=>{const students=await tx.select({id:enrollments.studentId}).from(enrollments).where(and(eq(enrollments.courseId,courseId),eq(enrollments.kind,'offline_semester'),eq(enrollments.status,'active'))).orderBy(enrollments.enrolledAt,enrollments.id);for(const student of students)await rosterStudent(tx,student.id,sessionId);};
+ if(executor)return run(executor);
+ return db.transaction(async tx=>{await tx.select().from(courses).where(eq(courses.id,courseId)).for('update');await run(tx);});
 }
 
 /**
@@ -152,6 +105,8 @@ export async function fanOutEnrolleesToSession(sessionId: string, courseId: stri
  */
 export async function cancelOfflineEnrollment(studentId: string, courseId: string) {
   await db.transaction(async (tx) => {
+    await tx.select().from(courses).where(eq(courses.id,courseId)).for('update');
+    await tx.execute(sql`SELECT id FROM course_sessions WHERE course_id=${courseId} AND starts_at>now() ORDER BY id FOR UPDATE`);
     const updated = await tx.update(enrollments)
       .set({ status: 'cancelled' })
       .where(and(eq(enrollments.studentId, studentId), eq(enrollments.courseId, courseId), eq(enrollments.kind, 'offline_semester')))

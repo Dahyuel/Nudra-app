@@ -1,6 +1,5 @@
-import { Resend } from 'resend';
-
-const resend = new Resend(process.env.RESEND_API_KEY || 're_placeholder');
+import { queueEmail } from './emailOutbox';
+import { db } from '../db';
 
 const FROM: string = process.env.SMTP_FROM || 'Nudra Support <support@nudra.org>';
 const INSTRUCTOR_FROM: string = process.env.INSTRUCTOR_INVITE_FROM || 'Nudra <no-reply@nudra.org>';
@@ -18,18 +17,8 @@ interface SendEmailOptions {
   html: string;
 }
 
-export async function sendEmail({ to, subject, html }: SendEmailOptions): Promise<void> {
-  if (!process.env.RESEND_API_KEY) {
-    console.warn('email not sent: RESEND_API_KEY is not configured');
-    return;
-  }
-  try {
-    const result = await resend.emails.send({ from: FROM, to, subject, html });
-    if (result.error) throw new Error(result.error.message);
-  } catch (err) {
-    console.warn('email send failed', err);
-    throw err;
-  }
+export async function sendEmail({to,subject,html}:SendEmailOptions, executor: Pick<typeof db,'execute'> = db):Promise<void> {
+  await queueEmail({to,subject,html,from:FROM},executor);
 }
 
 function wrapper(bodyHtml: string): string {
@@ -40,7 +29,7 @@ function button(href: string, label: string): string {
   return `<div style="text-align:center;margin:24px 0 8px;"><a href="${href}" style="display:inline-block;background-color:#2D6A4F;color:#FFFFFF;text-decoration:none;padding:12px 28px;border-radius:12px;font-weight:700;font-size:14px;">${label}</a></div>`;
 }
 
-export async function sendWelcomeEmail(user: { name: string; email: string; role: string }): Promise<void> {
+export async function sendWelcomeEmail(user: { name: string; email: string; role: string },executor: Pick<typeof db,'execute'> = db): Promise<void> {
   const dashboard = user.role === 'instructor' ? '/instructor/dashboard' : '/dashboard';
   const html = wrapper(
     `<h2 style="margin:0 0 12px;color:#1B1B1B;font-size:20px;">Welcome to Nudra, ${esc(user.name)}!</h2>` +
@@ -48,12 +37,13 @@ export async function sendWelcomeEmail(user: { name: string; email: string; role
       `<p style="margin:0;color:#4B5563;font-size:14px;line-height:1.8;">Explore your courses and learning tools whenever you’re ready.</p>` +
       button(`${FRONTEND_URL}${dashboard}`, 'Open Nudra')
   );
-  await sendEmail({ to: user.email, subject: 'Welcome to Nudra', html });
+  await sendEmail({ to: user.email, subject: 'Welcome to Nudra', html },executor);
 }
 
 export async function sendEnrollmentEmail(
   user: { name: string; email: string },
-  course: { title: string }
+  course: { title: string },
+  executor: Pick<typeof db,'execute'> = db
 ): Promise<void> {
   const html = wrapper(
     `<h2 style="margin:0 0 12px;color:#1B1B1B;font-size:20px;">You’re enrolled</h2>` +
@@ -62,13 +52,14 @@ export async function sendEnrollmentEmail(
       `<p style="margin:0;color:#4B5563;font-size:14px;line-height:1.8;">You can start watching lessons and continue learning now.</p>` +
       button(`${FRONTEND_URL}/my-courses`, 'Open my courses')
   );
-  await sendEmail({ to: user.email, subject: `You’re enrolled in ${course.title}`, html });
+  await sendEmail({ to: user.email, subject: `You’re enrolled in ${course.title}`, html },executor);
 }
 
 export async function sendCertificateEmail(
   user: { name: string; email: string },
   course: { title: string },
-  certCode: string
+  certCode: string,
+  executor: Pick<typeof db,'execute'> = db
 ): Promise<void> {
   const html = wrapper(
     `<h2 style="margin:0 0 12px;color:#1B1B1B;font-size:20px;">Congratulations, ${esc(user.name)}!</h2>` +
@@ -77,7 +68,7 @@ export async function sendCertificateEmail(
       `<p style="margin:0;color:#4B5563;font-size:14px;line-height:1.8;">Certificate code: <span style="font-weight:700;color:#1B1B1B;">${esc(certCode)}</span></p>` +
       button(`${FRONTEND_URL}/progress`, 'View certificate')
   );
-  await sendEmail({ to: user.email, subject: 'Your Nudra course certificate', html });
+  await sendEmail({ to: user.email, subject: 'Your Nudra course certificate', html },executor);
 }
 
 export async function sendCommunityReplyEmail(
@@ -101,7 +92,7 @@ export async function sendOrganizationInstructorInviteEmail(input: {
   organizationSlug: string;
   membershipId: string;
   setupToken?: string;
-}): Promise<void> {
+}, executor: Pick<typeof db, 'execute'> = db): Promise<void> {
   const link = organizationScopedUrl('/organization', input.organizationSlug, { invite: input.membershipId });
   const setupLink = input.setupToken
     ? organizationScopedUrl('/reset-password', input.organizationSlug, { token: input.setupToken, setup: '1' })
@@ -113,19 +104,7 @@ export async function sendOrganizationInstructorInviteEmail(input: {
       (setupLink ? button(setupLink, 'Create instructor password') : '') +
       button(link, 'Review invitation')
   );
-  if (setupLink) {
-    if (!process.env.RESEND_API_KEY) {
-      console.warn('instructor invite not sent: RESEND_API_KEY is not configured');
-      return;
-    }
-    try {
-      const result = await resend.emails.send({ from: INSTRUCTOR_FROM, to: input.email, subject: `Instructor invitation from ${input.organizationName}`, html });
-      if (result.error) throw new Error(result.error.message);
-      return;
-    } catch (err) { console.warn('instructor invitation email send failed', err); throw err; }
-  } else {
-    await sendEmail({ to: input.email, subject: `Instructor invitation from ${input.organizationName}`, html });
-  }
+  await queueEmail({to:input.email,subject:'Instructor invitation from '+input.organizationName,html,from:setupLink?INSTRUCTOR_FROM:FROM}, executor);
 }
 
 type OrganizationResetContext = {
@@ -187,6 +166,7 @@ export async function sendPasswordResetEmail(
   user: { name: string; email: string },
   token: string,
   organization?: OrganizationResetContext,
+  executor: Pick<typeof db,'execute'> = db,
 ): Promise<void> {
   const link = organization
     ? organizationResetLink(token, organization)
@@ -197,5 +177,5 @@ export async function sendPasswordResetEmail(
       button(link, 'Choose a new password') +
       `<p style="margin:16px 0 0;color:#9CA3AF;font-size:12px;line-height:1.8;">This link expires in 30 minutes and can only be used once. If you didn’t request it, you can ignore this email.</p>`
   );
-  await sendEmail({ to: user.email, subject: 'Reset your Nudra password', html });
+  await sendEmail({ to: user.email, subject: 'Reset your Nudra password', html },executor);
 }

@@ -1,3 +1,5 @@
+import { resourceLock } from '../middleware/resourceLock';
+import { courseAccess, lessonAccess } from '../lib/access';
 import { Router, Request, Response } from 'express';
 import { eq, and, asc, desc, sql, isNull, or } from 'drizzle-orm';
 import { z } from 'zod';
@@ -66,7 +68,7 @@ async function getCourseTitle(courseId: string | null): Promise<string | null> {
 
 async function verifyConversationOwnership(conversationId: string, studentId: string, organizationId?: string) {
   const courseScope = organizationId ? eq(courses.organizationId, organizationId) : isNull(courses.organizationId);
-  const rows = await db.select({ id: aiConversations.id })
+  const rows = await db.select({ id: aiConversations.id, courseId: aiConversations.courseId })
     .from(aiConversations)
     .leftJoin(courses, eq(aiConversations.courseId, courses.id))
     .where(and(
@@ -75,7 +77,8 @@ async function verifyConversationOwnership(conversationId: string, studentId: st
       or(isNull(aiConversations.courseId), courseScope),
     ))
     .limit(1);
-  return rows.length > 0;
+  if (!rows.length) return false;
+  return !rows[0].courseId || (await courseAccess(rows[0].courseId,studentId,'student',organizationId??null)).allowed;
 }
 
 type LessonAccessResult =
@@ -83,45 +86,12 @@ type LessonAccessResult =
   | { allowed: false; status: number; message: string };
 
 async function verifyCourseTenant(userId: string, courseId: string, organizationId?: string): Promise<boolean> {
-  const [course] = await db.select({ organizationId: courses.organizationId }).from(courses)
-    .where(eq(courses.id, courseId)).limit(1);
-  if (!course || (organizationId ? course.organizationId !== organizationId : course.organizationId !== null)) return false;
-  if (!organizationId) return true;
-  const [membership] = await db.select({ id: orgMemberships.id }).from(orgMemberships).where(and(
-    eq(orgMemberships.orgId, organizationId), eq(orgMemberships.userId, userId), eq(orgMemberships.status, 'active')
-  )).limit(1);
-  return Boolean(membership);
+  return (await courseAccess(courseId, userId, 'student', organizationId ?? null)).allowed;
 }
 
 async function verifyLessonAccess(lessonId: string, userId: string, role: string, organizationId?: string): Promise<LessonAccessResult> {
-  const lessonRows = await db.select().from(lessons).where(eq(lessons.id, lessonId)).limit(1);
-  if (lessonRows.length === 0) return { allowed: false, status: 404, message: 'Lesson not found' };
-
-  const lesson = lessonRows[0];
-
-  if (lesson.courseId && !(await verifyCourseTenant(userId, lesson.courseId, organizationId))) {
-    return { allowed: false, status: 404, message: 'Lesson not found' };
-  }
-
-  if (role === 'instructor' && lesson.courseId) {
-    const courseRows = await db.select().from(courses).where(eq(courses.id, lesson.courseId)).limit(1);
-    if (courseRows.length > 0 && courseRows[0].instructorId === userId) {
-      return { allowed: true, courseId: lesson.courseId };
-    }
-  }
-
-  if (lesson.courseId) {
-    const enr = await db
-      .select()
-      .from(enrollments)
-      .where(and(eq(enrollments.studentId, userId), eq(enrollments.courseId, lesson.courseId)))
-      .limit(1);
-    if (enr.length > 0) {
-      return { allowed: true, courseId: lesson.courseId };
-    }
-  }
-
-  return { allowed: false, status: 403, message: 'Access denied' };
+ const access = await lessonAccess(lessonId, userId, role, organizationId ?? null, false);
+ return access.allowed ? { allowed: true, courseId: access.courseId! } : { allowed: false, status: access.status, message: access.message };
 }
 
 async function getLessonTranscript(lessonId: string, maxChars?: number): Promise<string | null> {
@@ -138,19 +108,7 @@ async function getLessonTranscript(lessonId: string, maxChars?: number): Promise
 }
 
 async function verifyCourseAccess(userId: string, role: string, courseId: string, organizationId?: string): Promise<boolean> {
-  if (!(await verifyCourseTenant(userId, courseId, organizationId))) return false;
-  if (role === 'instructor') {
-    const courseRows = await db.select().from(courses).where(eq(courses.id, courseId)).limit(1);
-    if (courseRows.length > 0 && courseRows[0].instructorId === userId) {
-      return true;
-    }
-  }
-  const enr = await db
-    .select()
-    .from(enrollments)
-    .where(and(eq(enrollments.studentId, userId), eq(enrollments.courseId, courseId)))
-    .limit(1);
-  return enr.length > 0;
+ return (await courseAccess(courseId, userId, role, organizationId ?? null)).allowed;
 }
 
 router.post('/conversations', async (req: Request, res: Response) => {
@@ -173,7 +131,7 @@ router.post('/conversations', async (req: Request, res: Response) => {
     return res.json({ conversationId: inserted[0].id });
   } catch (err) {
     console.error('create conversation error', err);
-    return res.status(500).json({ message: 'Internal server error' });
+    return res.status((err as {status?:number}).status===429 ? 429 : 500).json({message:(err as {status?:number}).status===429 ? 'AI request budget exhausted. Try again later.' : 'Internal server error'});
   }
 });
 
@@ -182,7 +140,7 @@ router.post('/chat', chatLimiter, async (req: Request, res: Response) => {
     const studentId = req.user!.id;
     const { message, conversationId, courseId } = req.body ?? {};
 
-    if (typeof message !== 'string' || !message.trim()) {
+    if (typeof message !== 'string' || !message.trim() || message.length > 8000) {
       return res.status(400).json({ message: 'message is required' });
     }
 
@@ -303,7 +261,7 @@ If asked something unrelated to the course, gently redirect the student back to 
   } catch (err) {
     console.error('chat error', err);
     if (!res.headersSent) {
-      return res.status(500).json({ message: 'Internal server error' });
+      return res.status((err as {status?:number}).status===429 ? 429 : 500).json({message:(err as {status?:number}).status===429 ? 'AI request budget exhausted. Try again later.' : 'Internal server error'});
     }
     res.write('data: [ERROR:UNKNOWN]\n\n');
     res.end();
@@ -321,6 +279,9 @@ router.get('/conversations', async (req: Request, res: Response) => {
         courseId: aiConversations.courseId,
         createdAt: aiConversations.createdAt,
         courseTitle: courses.title,
+        messageCount: sql<number>`(SELECT count(*)::int FROM ai_messages m WHERE m.conversation_id=${aiConversations.id})`,
+        lastMessage: sql<string | null>`(SELECT content FROM ai_messages m WHERE m.conversation_id=${aiConversations.id} AND m.role='user' ORDER BY m.created_at LIMIT 1)`,
+
       })
       .from(aiConversations)
       .leftJoin(courses, eq(aiConversations.courseId, courses.id))
@@ -328,40 +289,13 @@ router.get('/conversations', async (req: Request, res: Response) => {
         eq(aiConversations.studentId, studentId),
         or(isNull(aiConversations.courseId), courseScope),
       ))
-      .orderBy(desc(aiConversations.createdAt));
+      .orderBy(desc(aiConversations.createdAt)).limit(50);
 
-    const conversations = await Promise.all(
-      rows.map(async (row) => {
-        // Fetch the FIRST user message as the conversation title
-        const firstUserMsg = await db
-          .select({ content: aiMessages.content })
-          .from(aiMessages)
-          .where(and(eq(aiMessages.conversationId, row.id), eq(aiMessages.role, 'user')))
-          .orderBy(asc(aiMessages.createdAt))
-          .limit(1);
-
-        const countRows = await db
-          .select({ count: sql<number>`count(*)::int` })
-          .from(aiMessages)
-          .where(eq(aiMessages.conversationId, row.id));
-
-        return {
-          id: row.id,
-          courseId: row.courseId,
-          courseTitle: row.courseTitle,
-          createdAt: row.createdAt,
-          messageCount: countRows[0]?.count ?? 0,
-          lastMessage: firstUserMsg[0]?.content ?? null,
-        };
-      })
-    );
-
-    const filtered = conversations.filter((c) => c.messageCount > 0);
-
+    const filtered = rows.filter(row=>row.messageCount>0);
     return res.json({ conversations: filtered });
   } catch (err) {
     console.error('list conversations error', err);
-    return res.status(500).json({ message: 'Internal server error' });
+    return res.status((err as {status?:number}).status===429 ? 429 : 500).json({message:(err as {status?:number}).status===429 ? 'AI request budget exhausted. Try again later.' : 'Internal server error'});
   }
 });
 
@@ -379,7 +313,7 @@ router.delete('/conversations/:conversationId', async (req: Request, res: Respon
     return res.json({ success: true });
   } catch (err) {
     console.error('delete conversation error', err);
-    return res.status(500).json({ message: 'Internal server error' });
+    return res.status((err as {status?:number}).status===429 ? 429 : 500).json({message:(err as {status?:number}).status===429 ? 'AI request budget exhausted. Try again later.' : 'Internal server error'});
   }
 });
 
@@ -397,7 +331,7 @@ router.get('/conversations/:conversationId/messages', async (req: Request, res: 
       .select({ id: aiMessages.id, role: aiMessages.role, content: aiMessages.content, createdAt: aiMessages.createdAt })
       .from(aiMessages)
       .where(eq(aiMessages.conversationId, conversationId))
-      .orderBy(asc(aiMessages.createdAt));
+      .orderBy(asc(aiMessages.createdAt)).limit(500);
 
     return res.json(
       rows.map((r) => ({
@@ -409,11 +343,11 @@ router.get('/conversations/:conversationId/messages', async (req: Request, res: 
     );
   } catch (err) {
     console.error('list messages error', err);
-    return res.status(500).json({ message: 'Internal server error' });
+    return res.status((err as {status?:number}).status===429 ? 429 : 500).json({message:(err as {status?:number}).status===429 ? 'AI request budget exhausted. Try again later.' : 'Internal server error'});
   }
 });
 
-router.post('/flashcards/:lessonId', flashcardLimiter, async (req: Request, res: Response) => {
+router.post('/flashcards/:lessonId', flashcardLimiter, resourceLock('flashcards',true), async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const role = req.user!.role;
@@ -430,8 +364,6 @@ router.post('/flashcards/:lessonId', flashcardLimiter, async (req: Request, res:
         message: 'Lesson transcript not ready yet. Please wait for video processing to complete.',
       });
     }
-
-    await db.delete(flashcards).where(and(eq(flashcards.studentId, userId), eq(flashcards.lessonId, lessonId)));
 
     const prompt = `You are an educational flashcard generator. Based on the following lesson content, generate exactly 5 flashcards. Return ONLY a valid JSON array with no markdown, no explanation, no backticks.
 Format: [{"question": "...", "answer": "..."}]
@@ -459,7 +391,10 @@ ${transcript}`;
     const validated = z.array(flashcardSchema).parse(parsed);
     const cards = validated.slice(0, 5);
 
-    const inserted = await db
+    const inserted = await db.transaction(async tx => {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${userId + ':' + lessonId},0))`);
+      await tx.delete(flashcards).where(and(eq(flashcards.studentId,userId),eq(flashcards.lessonId,lessonId)));
+      return tx
       .insert(flashcards)
       .values(
         cards.map((c) => ({
@@ -471,6 +406,7 @@ ${transcript}`;
       )
       .returning();
 
+    });
     return res.json(
       inserted.map((f) => ({
         id: f.id,
@@ -483,7 +419,7 @@ ${transcript}`;
     if (err instanceof z.ZodError) {
       return res.status(422).json({ message: 'Invalid flashcard format from AI' });
     }
-    return res.status(500).json({ message: 'Internal server error' });
+    return res.status((err as {status?:number}).status===429 ? 429 : 500).json({message:(err as {status?:number}).status===429 ? 'AI request budget exhausted. Try again later.' : 'Internal server error'});
   }
 });
 
@@ -504,11 +440,11 @@ router.get('/flashcards/:lessonId', async (req: Request, res: Response) => {
     return res.json(rows);
   } catch (err) {
     console.error('get flashcards error', err);
-    return res.status(500).json({ message: 'Internal server error' });
+    return res.status((err as {status?:number}).status===429 ? 429 : 500).json({message:(err as {status?:number}).status===429 ? 'AI request budget exhausted. Try again later.' : 'Internal server error'});
   }
 });
 
-router.post('/summary/:lessonId', summaryLimiter, async (req: Request, res: Response) => {
+router.post('/summary/:lessonId', summaryLimiter, resourceLock('summary'), async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const role = req.user!.role;
@@ -548,12 +484,13 @@ ${transcript}`;
     const inserted = await db
       .insert(lessonSummaries)
       .values({ lessonId, content })
+      .onConflictDoUpdate({target:lessonSummaries.lessonId,set:{content}})
       .returning();
 
     return res.json({ lessonId, content: inserted[0].content, cached: false });
   } catch (err) {
     console.error('summary error', err);
-    return res.status(500).json({ message: 'Internal server error' });
+    return res.status((err as {status?:number}).status===429 ? 429 : 500).json({message:(err as {status?:number}).status===429 ? 'AI request budget exhausted. Try again later.' : 'Internal server error'});
   }
 });
 
@@ -577,7 +514,7 @@ router.get('/summary/:lessonId', async (req: Request, res: Response) => {
     return res.json({ content: rows[0]?.content ?? null });
   } catch (err) {
     console.error('get summary error', err);
-    return res.status(500).json({ message: 'Internal server error' });
+    return res.status((err as {status?:number}).status===429 ? 429 : 500).json({message:(err as {status?:number}).status===429 ? 'AI request budget exhausted. Try again later.' : 'Internal server error'});
   }
 });
 
@@ -613,7 +550,7 @@ router.post('/weak-topics/:courseId', requireRole('student'), weakTopicsLimiter,
     if (/AI service|DeepSeek proxy|AI request failed/i.test(message)) {
       return res.status(503).json({ message: 'The AI service is unavailable right now. Please try again later.' });
     }
-    return res.status(500).json({ message: 'Internal server error' });
+    return res.status((err as {status?:number}).status===429 ? 429 : 500).json({message:(err as {status?:number}).status===429 ? 'AI request budget exhausted. Try again later.' : 'Internal server error'});
   }
 });
 
@@ -646,7 +583,7 @@ router.get('/weak-topics/:courseId', requireRole('student'), async (req: Request
     });
   } catch (err) {
     console.error('get weak topics error', err);
-    return res.status(500).json({ message: 'Internal server error' });
+    return res.status((err as {status?:number}).status===429 ? 429 : 500).json({message:(err as {status?:number}).status===429 ? 'AI request budget exhausted. Try again later.' : 'Internal server error'});
   }
 });
 

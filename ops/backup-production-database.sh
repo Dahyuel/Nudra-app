@@ -43,7 +43,7 @@ if [[ ! -s "$dump_file" ]]; then
   exit 1
 fi
 pg_restore --list "$dump_file" >/dev/null
-sha256sum "$dump_file" > "$dump_file.sha256"
+(cd "$(dirname "$dump_file")" && sha256sum "$(basename "$dump_file")") > "$dump_file.sha256"
 chmod 600 "$dump_file" "$dump_file.sha256"
 
 find "$backup_dir" -maxdepth 1 -type f -name 'nudra-vps-*.dump' -mtime "+$retention_days" -delete

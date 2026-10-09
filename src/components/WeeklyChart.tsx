@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 
 type WeeklyChartItem = {
   day: string;
@@ -12,12 +12,11 @@ interface WeeklyChartProps {
 }
 
 export const WeeklyChart: React.FC<WeeklyChartProps> = ({ data = [] }) => {
-  const [hoveredDay, setHoveredDay] = useState<string | null>(null);
   const maxHours = data.length > 0 ? Math.max(...data.map((d) => d.hours)) : 0;
   const totalHours = data.reduce((acc, d) => acc + d.hours, 0);
 
   return (
-    <div className="rounded-2xl p-6 bg-white border border-gray-100 shadow-sm flex flex-col justify-between">
+    <div className="flex flex-col justify-between">
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="font-bold text-base text-[#1B1B1B]">Learning Analytics</h3>
@@ -29,7 +28,7 @@ export const WeeklyChart: React.FC<WeeklyChartProps> = ({ data = [] }) => {
       </div>
 
       {totalHours === 0 ? (
-        <div className="h-44 flex items-center justify-center text-xs text-gray-400 italic">
+        <div className="h-44 flex items-center justify-center text-sm text-gray-600 italic">
           No study activity recorded this week
         </div>
       ) : (
@@ -40,17 +39,13 @@ export const WeeklyChart: React.FC<WeeklyChartProps> = ({ data = [] }) => {
               return (
                 <div
                   key={item.day}
-                  onMouseEnter={() => setHoveredDay(item.day)}
-                  onMouseLeave={() => setHoveredDay(null)}
-                  className="flex-1 flex flex-col items-center gap-2 group cursor-pointer"
+                  role="img"
+                  aria-label={`${item.day}: ${item.hours.toFixed(1)} hours of study`}
+                  className="group flex-1 flex flex-col items-center gap-2"
                 >
-                  <div
-                    className={`text-[11px] font-bold px-1.5 py-0.5 rounded transition-opacity ${
-                      hoveredDay === item.day ? 'opacity-100 bg-gray-800 text-white' : 'opacity-0'
-                    }`}
-                  >
+                  <span aria-hidden="true" className="text-[11px] font-semibold tabular-nums text-[#557262]">
                     {item.label ?? `${item.hours}h`}
-                  </div>
+                  </span>
 
                   <div className="w-full max-w-[34px] bg-gray-100/60 rounded-full h-36 flex items-end justify-center p-1">
                     <div
@@ -64,10 +59,10 @@ export const WeeklyChart: React.FC<WeeklyChartProps> = ({ data = [] }) => {
                   </div>
 
                   <span
-                    className={`text-[11px] font-bold tracking-wider ${
+                    className={`text-xs font-bold tracking-wider ${
                       item.active
-                        ? 'text-[#2D6A4F]'
-                        : 'text-gray-400 group-hover:text-gray-600'
+                          ? 'text-[#2D6A4F]'
+                          : 'text-gray-600'
                     }`}
                   >
                     {item.day}

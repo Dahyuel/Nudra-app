@@ -16,7 +16,7 @@ declare global {
 export const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
   const sessionId = req.cookies?.session_id;
 
-  if (!sessionId) {
+  if (typeof sessionId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) {
     return res.status(401).json({ message: 'Unauthorized' });
   }
 
@@ -26,6 +26,8 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
         id: users.id,
         name: users.name,
         email: users.email,
+        emailVerifiedAt: users.emailVerifiedAt,
+        mfaVerified: sessions.mfaVerified,
         role: users.role,
         avatarUrl: users.avatarUrl,
         grade: users.grade,
@@ -53,7 +55,9 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
       return res.status(403).json({ message: 'This account cannot access this organization.' });
     }
 
-    req.user = rows[0];
+    if (process.env.NODE_ENV==='production' && rows[0].role==='admin' && !rows[0].mfaVerified) return res.status(401).json({message:'Administrator MFA authentication is required.'});
+    const {mfaVerified,...user} = rows[0];
+    req.user = user;
     next();
   } catch (err) {
     console.error('requireAuth error', err);
@@ -107,7 +111,7 @@ export const requireActiveOrganizationMembership = async (req: Request, res: Res
   }
 
   const sessionId = req.cookies?.session_id;
-  if (!sessionId) return next();
+  if (typeof sessionId !== 'string' || !/^[0-9a-f-]{36}$/i.test(sessionId)) return next();
 
   try {
     const [row] = await db.select({

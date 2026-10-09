@@ -67,7 +67,9 @@ router.post('/courses/:courseId/sessions', requireAuth, async (req: Request, res
   }
   if (!(await canManageCourse(req, courseId.data))) return res.status(403).json({ message: 'Course manager or instructor access required.' });
   try {
-    const result = await db.execute(sql`INSERT INTO course_sessions
+    const session = await db.transaction(async tx => {
+    await tx.execute(sql`SELECT id FROM courses WHERE id=${courseId.data} FOR UPDATE`);
+    const result = await tx.execute(sql`INSERT INTO course_sessions
       (course_id, organization_id, starts_at, ends_at, capacity, location, created_by)
       SELECT c.id, c.organization_id, ${parsed.data.startsAt}::timestamptz,
         ${parsed.data.endsAt}::timestamptz, ${parsed.data.capacity}, ${parsed.data.location}, ${req.user!.id}
@@ -76,12 +78,10 @@ router.post('/courses/:courseId/sessions', requireAuth, async (req: Request, res
         AND c.delivery_mode='offline' AND c.approval_status='approved'
       RETURNING id, course_id AS "courseId", organization_id AS "organizationId", starts_at AS "startsAt", ends_at AS "endsAt", capacity, location, status`);
     const session = rowsOf(result)[0] as { id?: string; courseId?: string; organizationId?: string | null } | undefined;
-    if (!session?.id || !session.courseId) return res.status(409).json({ message: 'Only approved offline courses can have bookable sessions.' });
-    try {
-      await fanOutEnrolleesToSession(String(session.id), String(session.courseId), session.organizationId ?? null);
-    } catch (fanOutErr) {
-      console.error('session fan-out to enrollees failed', fanOutErr);
-    }
+    if (!session?.id || !session.courseId) throw new Error('Only approved offline courses can have bookable sessions.');
+    await fanOutEnrolleesToSession(String(session.id),String(session.courseId),session.organizationId ?? null,tx);
+    return session;
+    });
     return res.status(201).json({ session });
   } catch (error) {
     console.error('create booking session failed', error);
@@ -354,10 +354,7 @@ router.post('/sessions/:sessionId/book', requireAuth, async (req: Request, res: 
   }).safeParse(req.body ?? {});
   if (!bookBody.success) return res.status(400).json({ message: 'Choose how you want to pay for this booking.' });
   const paymentMethod = bookBody.data.paymentMethod;
-  // Online is a UI stub right now: no gateway, so we flip the booking to
-  // 'paid' immediately. Once a real provider is wired, the booking should
-  // start as 'pending' and only move to 'paid' when the webhook confirms.
-  const paymentStatus = paymentMethod === 'online' ? 'paid' : 'pending';
+  const paymentStatus = 'pending';
   try {
     const booking = await db.transaction(async (tx) => {
       const lockedResult = await tx.execute(sql`SELECT s.id, s.course_id, s.organization_id, s.capacity, s.status,

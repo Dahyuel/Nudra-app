@@ -1,9 +1,13 @@
+import { disconnectUser, disconnectSession } from '../lib/socket';
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import multer from 'multer';
 import { z } from 'zod';
 import { randomUUID, randomBytes, createHash } from 'crypto';
-import { eq, and, gt, ne, isNull } from 'drizzle-orm';
+import { eq, and, gt, ne, isNull, sql } from 'drizzle-orm';
+import { decryptMfaSecret, verifyTotp } from '../lib/totp';
+import { queueEmail } from '../lib/emailOutbox';
+import { createRateLimiter } from '../middleware/rateLimit';
 import { db } from '../db';
 import { users, sessions, instructorApplications, passwordResetTokens, orgMemberships } from '../db/schema';
 import { requireAuth } from '../middleware/requireAuth';
@@ -17,9 +21,32 @@ const router = Router();
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 const DUMMY_PASSWORD_HASH = bcrypt.hashSync(randomBytes(32).toString('hex'), 12);
 
+async function queueVerification(user:{id:string;email:string},req:Request,executor:Pick<typeof db,'execute'>=db) {
+ const token=randomBytes(32).toString('base64url');
+ await executor.execute(sql`DELETE FROM email_verification_tokens WHERE user_id=${user.id}`);
+ await executor.execute(sql`INSERT INTO email_verification_tokens(user_id,token_hash,expires_at) VALUES(${user.id},${createHash('sha256').update(token).digest('hex')},now()+interval '24 hours')`);
+ const base=req.organization && process.env.NODE_ENV==='production' ? 'https://'+req.organization.slug+'.'+process.env.BASE_DOMAIN : process.env.FRONTEND_URL||'http://localhost:3000';
+ const url=new URL('/api/auth/verify-email',base);url.searchParams.set('token',token);if(req.organization)url.searchParams.set('org',req.organization.slug);
+ await queueEmail({to:user.email,from:process.env.SMTP_FROM||'Nudra Support <support@nudra.org>',subject:'Verify your Nudra email',html:'<p>Confirm this email address for your Nudra account. This link expires in 24 hours.</p><p><a href="'+url.toString().replace(/&/g,'&amp;')+'">Verify email</a></p>'},executor);
+}
+router.post('/verify-email/request',requireAuth,createRateLimiter({keyPrefix:'email-verification',maxRequests:3,windowSeconds:3600,errorMessage:'Try again later.'}),async(req,res)=>{
+ if(req.user!.emailVerifiedAt)return res.json({message:'Email already verified.'});
+ await db.transaction(tx=>queueVerification(req.user!,req,tx));
+ return res.status(202).json({message:'Verification email queued.'});
+});
+router.get('/verify-email',async(req,res)=>{
+ const token=req.query.token;if(typeof token!=='string'||!/^[a-zA-Z0-9_-]{43}$/.test(token))return res.status(400).json({message:'Invalid verification link.'});
+ const verified=await db.transaction(async tx=>{
+  const result=await tx.execute(sql`DELETE FROM email_verification_tokens t USING users u WHERE t.user_id=u.id AND t.token_hash=${createHash('sha256').update(token).digest('hex')} AND t.expires_at>now() AND u.organization_id IS NOT DISTINCT FROM ${req.organization?.id??null}::uuid RETURNING t.user_id`);
+  if(!result.rows[0])return false;
+  await tx.update(users).set({emailVerifiedAt:new Date()}).where(eq(users.id,String(result.rows[0].user_id)));return true;
+ });
+ return res.status(verified?200:400).json({message:verified?'Email verified. You may return to Nudra.':'This verification link has expired or already been used.'});
+});
+
 function isValidPassword(password: string): boolean {
   if (!password || typeof password !== 'string') return false;
-  if (password.length < 8) return false;
+  if (password.length < 8 || Buffer.byteLength(password, 'utf8') > 72) return false;
   const hasUpper = /[A-Z]/.test(password);
   const hasLower = /[a-z]/.test(password);
   const hasDigit = /\d/.test(password);
@@ -34,6 +61,7 @@ const publicUser = (user: typeof users.$inferSelect) => ({
   id: user.id,
   name: user.name,
   email: user.email,
+  emailVerifiedAt: user.emailVerifiedAt,
   role: user.role,
   avatarUrl: user.avatarUrl,
   grade: user.grade,
@@ -158,7 +186,7 @@ router.post('/register', async (req: Request, res: Response) => {
   try {
     const { name, email, password, role, grade, phone } = req.body ?? {};
 
-    if (!name || !email || !password) {
+    if (typeof name !== 'string' || name.trim().length < 2 || name.length > 255 || typeof email !== 'string' || !email || typeof password !== 'string' || !password) {
       return res.status(400).json({ message: 'All required fields must be provided' });
     }
 
@@ -181,7 +209,7 @@ router.post('/register', async (req: Request, res: Response) => {
 
     const normalizedEmail = sanitizeEmail(email);
 
-    if (!normalizedEmail.includes('@') || normalizedEmail.length > 255) {
+    if (!z.string().email().max(255).safeParse(normalizedEmail).success) {
       return res.status(400).json({ message: 'Invalid email address' });
     }
 
@@ -224,12 +252,13 @@ router.post('/register', async (req: Request, res: Response) => {
           status: 'pending',
         });
       }
+      await queueVerification(created,req,tx);
+      await sendWelcomeEmail({name:created.name,email:created.email,role:created.role},tx);
       return created;
     });
 
     await startSession(res, user.id);
 
-    sendWelcomeEmail({ name: user.name, email: user.email, role: user.role }).catch(console.warn);
     createNotification(
       user.id,
       'enrollment_confirmed',
@@ -265,7 +294,7 @@ router.post('/register-instructor', async (req: Request, res: Response) => {
     const { name, password, subjects, experienceYears, bio, portfolioUrl } = parsed.data;
     const normalizedEmail = sanitizeEmail(parsed.data.email);
 
-    if (!normalizedEmail.includes('@')) {
+    if (!z.string().email().max(255).safeParse(normalizedEmail).success) {
       return res.status(400).json({ message: 'Invalid email address' });
     }
 
@@ -368,6 +397,7 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
     if (user) {
       const token = randomBytes(32).toString('base64url');
       await db.transaction(async (tx) => {
+        await tx.select({id:users.id}).from(users).where(eq(users.id,user.id)).for('update');
         // Only the newest link works.
         await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, user.id));
         await tx.insert(passwordResetTokens).values({
@@ -375,9 +405,8 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
           tokenHash: hashResetToken(token),
           expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
         });
+        await sendPasswordResetEmail(user, token, req.organization,tx);
       });
-      // Not awaited: response time shouldn't reveal whether an email was sent.
-      sendPasswordResetEmail(user, token, req.organization).catch(console.warn);
     }
 
     return res.json(genericReply);
@@ -413,12 +442,19 @@ router.post('/reset-password', async (req: Request, res: Response) => {
     const resetToken = reset.resetToken;
 
     const passwordHash = await bcrypt.hash(password, 12);
-    await db.transaction(async (tx) => {
-      await tx.update(users).set({ passwordHash, updatedAt: new Date() }).where(eq(users.id, resetToken.userId));
+    const consumed = await db.transaction(async (tx) => {
+      const [lockedUser]=await tx.select().from(users).where(eq(users.id,resetToken.userId)).for('update');
+      if(!lockedUser || !(await isAllowedInRealm(lockedUser,req)))return false;
+      const [claimed] = await tx.delete(passwordResetTokens).where(and(eq(passwordResetTokens.id, resetToken.id), gt(passwordResetTokens.expiresAt, new Date()))).returning();
+      if (!claimed) return false;
+      await tx.update(users).set({ passwordHash, mustChangePassword: false, updatedAt: new Date() }).where(eq(users.id, resetToken.userId));
       // One-time link: remove it (and any others), and sign the account out everywhere.
       await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, resetToken.userId));
       await tx.delete(sessions).where(eq(sessions.userId, resetToken.userId));
+      return true;
     });
+    if (!consumed) return res.status(400).json({ message: 'This reset link is invalid or has expired.' });
+    disconnectUser(resetToken.userId);
 
     return res.json({ message: 'Your password has been reset. You can now sign in.' });
   } catch (err) {
@@ -445,16 +481,31 @@ router.post('/login', async (req: Request, res: Response) => {
       return res.status(401).json({ message: 'Invalid email or password' });
     }
 
-    await db.delete(sessions).where(eq(sessions.userId, user.id));
-
-    const sessionRows = await db
+    const sessionRows = await db.transaction(async (tx) => {
+      const [lockedUser]=await tx.select().from(users).where(eq(users.id,user.id)).for('update');
+      if(!lockedUser || lockedUser.passwordHash!==user.passwordHash || lockedUser.role!==user.role || lockedUser.organizationId!==user.organizationId) throw Object.assign(new Error('Account changed. Sign in again.'),{status:401});
+      if (user.role === 'admin') {
+        const mfa = await tx.execute(sql`SELECT encrypted_secret,last_counter FROM admin_mfa WHERE user_id=${user.id} FOR UPDATE`);
+        const entry = mfa.rows[0] as {encrypted_secret:string;last_counter:string}|undefined;
+        if (!entry && process.env.NODE_ENV === 'production') throw Object.assign(new Error('Administrator MFA must be provisioned by the server operator.'),{status:403});
+        if (entry) {
+          const counter=verifyTotp(decryptMfaSecret(entry.encrypted_secret),req.body?.otp,Number(entry.last_counter));
+          if(counter===null)throw Object.assign(new Error('Enter a fresh six-digit authenticator code.'),{status:401});
+          await tx.execute(sql`UPDATE admin_mfa SET last_counter=${counter} WHERE user_id=${user.id}`);
+        }
+      }
+      await tx.delete(sessions).where(eq(sessions.userId, user.id));
+      return tx
       .insert(sessions)
       .values({
         userId: user.id,
+        mfaVerified: user.role === 'admin',
         expiresAt: new Date(Date.now() + THIRTY_DAYS_MS),
       })
       .returning();
 
+    });
+    disconnectUser(user.id);
     res.cookie('session_id', sessionRows[0].id, SESSION_COOKIE_OPTIONS);
 
     return res.json({
@@ -462,6 +513,7 @@ router.post('/login', async (req: Request, res: Response) => {
       user: await responseUser(req, user),
     });
   } catch (err) {
+    if (err instanceof Error && [401,403].includes((err as Error & {status:number}).status)) return res.status((err as Error & {status:number}).status).json({message:err.message});
     console.error('login error', err);
     return res.status(500).json({ message: 'Internal server error' });
   }
@@ -471,7 +523,8 @@ router.post('/logout', async (req: Request, res: Response) => {
   try {
     const sessionId = req.cookies?.session_id;
 
-    if (sessionId) {
+    if (typeof sessionId === 'string' && /^[0-9a-f-]{36}$/i.test(sessionId)) {
+      disconnectSession(sessionId);
       await db.delete(sessions).where(eq(sessions.id, sessionId));
     }
 
@@ -487,18 +540,18 @@ router.get('/me', async (req: Request, res: Response) => {
   try {
     const sessionId = req.cookies?.session_id;
 
-    if (!sessionId) {
+    if (typeof sessionId !== 'string' || !/^[0-9a-f-]{36}$/i.test(sessionId)) {
       return res.status(401).json({ message: 'Unauthorized' });
     }
 
     const rows = await db
-      .select({ user: users })
+      .select({ user: users, mfaVerified: sessions.mfaVerified })
       .from(sessions)
       .innerJoin(users, eq(sessions.userId, users.id))
       .where(and(eq(sessions.id, sessionId), gt(sessions.expiresAt, new Date())))
       .limit(1);
 
-    if (rows.length === 0 || !(await isAllowedInRealm(rows[0].user, req))) {
+    if (rows.length === 0 || !(await isAllowedInRealm(rows[0].user, req)) || (process.env.NODE_ENV==='production' && rows[0].user.role==='admin' && !rows[0].mfaVerified)) {
       clearSessionCookie(res);
       return res.status(401).json({ message: 'Unauthorized' });
     }
@@ -581,7 +634,7 @@ router.put('/password', requireAuth, async (req: Request, res: Response) => {
   try {
     const { currentPassword, newPassword } = req.body ?? {};
 
-    if (!newPassword || (!currentPassword && !req.user!.mustChangePassword)) {
+    if (typeof newPassword !== 'string' || (currentPassword !== undefined && typeof currentPassword !== 'string') || (!currentPassword && !req.user!.mustChangePassword)) {
       return res.status(400).json({ message: 'Current and new password are required' });
     }
 
@@ -607,7 +660,14 @@ router.put('/password', requireAuth, async (req: Request, res: Response) => {
 
     const passwordHash = await bcrypt.hash(newPassword, 12);
 
-    await db.update(users).set({ passwordHash, mustChangePassword: false, updatedAt: new Date() }).where(eq(users.id, user.id));
+    await db.transaction(async (tx) => {
+      const [lockedUser]=await tx.select().from(users).where(eq(users.id,user.id)).for('update');
+      if(!lockedUser || lockedUser.passwordHash!==user.passwordHash)throw Object.assign(new Error('Password changed. Sign in again.'),{status:409});
+      await tx.update(users).set({ passwordHash, mustChangePassword: false, updatedAt: new Date() }).where(eq(users.id, user.id));
+      await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, user.id));
+      await tx.delete(sessions).where(and(eq(sessions.userId, user.id), ne(sessions.id, req.cookies.session_id)));
+    });
+    disconnectUser(user.id);
 
     // Sign out every other session: if the old password leaked, anyone who
     // signed in with it loses access. The current session stays valid.
@@ -618,6 +678,7 @@ router.put('/password', requireAuth, async (req: Request, res: Response) => {
 
     return res.json({ message: 'Password updated. Other devices have been signed out.' });
   } catch (err) {
+    if(err instanceof Error && (err as Error & {status?:number}).status===409)return res.status(409).json({message:err.message});
     console.error('password update error', err);
     return res.status(500).json({ message: 'Internal server error' });
   }
