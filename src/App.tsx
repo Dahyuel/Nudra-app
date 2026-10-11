@@ -15,6 +15,7 @@ const CatalogPage = lazyNamed(() => import('./pages/CatalogPage'), 'CatalogPage'
 const AcademicHomePage = lazyNamed(() => import('./pages/AcademicPage'), 'AcademicHomePage');
 const AcademicCatalogPage = lazyNamed(() => import('./pages/AcademicPage'), 'AcademicCatalogPage');
 const OrganizationsDirectoryPage = lazyNamed(() => import('./pages/OrganizationsDirectoryPage'), 'OrganizationsDirectoryPage');
+const ForOrganizationsPage = lazyNamed(() => import('./pages/ForOrganizationsPage'), 'ForOrganizationsPage');
 const OfflineBookingsPage = lazyNamed(() => import('./pages/OfflineBookingsPage'), 'OfflineBookingsPage');
 const LearningPathPage = lazyNamed(() => import('./pages/LearningPathPage'), 'LearningPathPage');
 const MyCoursesPage = lazyNamed(() => import('./pages/MyCoursesPage'), 'MyCoursesPage');
@@ -108,6 +109,7 @@ export default function App() {
     <Routes>
       {/* Landing/Hero Page */}
       <Route path="/" element={<TenantLandingPage />} />
+      <Route path="/for-organizations" element={<ForOrganizationsPage />} />
 
       {/* Authentication Pages */}
       <Route
