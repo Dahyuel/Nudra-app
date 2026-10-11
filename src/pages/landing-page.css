@@ -107,3 +107,108 @@
 @media(max-width:850px){.nl-course-discovery h2{font-size:36px}.nl-course-discovery .nl-course-grid{gap:20px}.nl-course-discovery .nl-course h3{font-size:19px}.nl-studio-illustration{height:350px}.nl-studio-visual{min-height:320px}}
 @media(max-width:600px){.nl-trust{padding-bottom:24px}.nl-course-discovery h2{font-size:33px}.nl-course-discovery .nl-library-heading{margin-bottom:30px}.nl-course-discovery .nl-library-heading>.nl-text-link{margin-top:23px}.nl-course-discovery .nl-course-grid{gap:24px}.nl-course-discovery .nl-course>img{height:210px}.nl-course-discovery .nl-course h3{font-size:22px}.nl-studio-visual{min-height:270px}.nl-studio-illustration{height:300px}}
 @media(prefers-reduced-motion:reduce){.nudra-landing *{transition:none!important;animation:none!important;scroll-behavior:auto!important}.nl-marquee-track{transform:none;width:auto}.nl-marquee-group{flex-wrap:wrap;justify-content:center;gap:25px;padding:0 20px}.nl-marquee-group[aria-hidden="true"]{display:none}.nl-marquee{mask-image:none}.nl-marquee:before,.nl-marquee:after{display:none}.nl-motion-control{display:none}}
+/* Homepage visual refresh */
+.nl-trust-item{padding:8px 0;border-radius:0;transition:none;outline-offset:5px}
+.nl-trust-item:hover,.nl-trust-item:focus-visible{transform:none;background:transparent;box-shadow:none;outline:0}
+.nl-trust-item:hover strong,.nl-trust-item:focus-visible strong{color:#426d37;text-decoration:underline;text-decoration-color:#87a83c;text-underline-offset:4px}
+.nl-roadmap-stage>a{padding:0 0 22px;background:transparent!important;border-radius:0;min-height:0;box-shadow:none!important;transition:transform .25s ease}
+.nl-roadmap-stage>a:hover{transform:translateY(-5px)}
+.nl-roadmap-photo{height:235px;position:relative;overflow:hidden;border-radius:10px;background:#e0ebd8;margin-bottom:21px;isolation:isolate}
+.nl-roadmap-peach .nl-roadmap-photo{background:#f3e2d1}.nl-roadmap-lavender .nl-roadmap-photo{background:#e7e2f0}.nl-roadmap-yellow .nl-roadmap-photo{background:#ebedcf}
+.nl-roadmap-photo>img{width:100%;height:100%;display:block;object-fit:cover;animation:nl-roadmap-person 6s ease-in-out infinite;transform-origin:center 75%}
+.nl-roadmap-stage:nth-child(2) .nl-roadmap-photo>img{animation-delay:-1.5s}.nl-roadmap-stage:nth-child(3) .nl-roadmap-photo>img{animation-delay:-3s}.nl-roadmap-stage:nth-child(4) .nl-roadmap-photo>img{animation-delay:-4.5s}
+.nl-roadmap-icon{position:absolute;left:15px;bottom:15px;width:43px;height:43px;display:grid;place-items:center;border-radius:50%;color:var(--green);background:#f7f9e9e8;backdrop-filter:blur(6px)}
+.nl-roadmap-label{margin:0 0 5px}.nl-roadmap-stage h3{font-size:22px;margin-bottom:10px}.nl-roadmap-stage p{min-height:92px}
+.nl-roadmap-link{border-top:1px solid #183d2420}
+.nl-course-discovery{background:#f5f5ed;overflow:hidden}
+.nl-course-discovery:before{content:'';position:absolute;width:410px;height:410px;right:-120px;top:-130px;border:1px solid #dae1cd;border-radius:50%;box-shadow:0 0 0 28px #eff1e6,0 0 0 29px #dae1cd,0 0 0 58px #f5f5ed,0 0 0 59px #dae1cd;pointer-events:none}
+.nl-course-discovery>.nl-container{position:relative}
+.nl-course-discovery .nl-library-heading{margin-bottom:42px;align-items:end}
+.nl-course-discovery h2{font-size:clamp(42px,5vw,62px);line-height:1.04;letter-spacing:-2.4px;color:var(--green)}
+.nl-course-discovery h2 span{color:#71894f}
+.nl-course-discovery .nl-eyebrow{color:#61744a}
+.nl-course-discovery .nl-library-heading p{color:#667264;max-width:420px}
+.nl-library-aside{display:flex;align-items:center;gap:30px;padding-bottom:4px}
+.nl-library-index{display:flex;align-items:center;gap:12px;font-size:11px;font-weight:700;letter-spacing:1px;color:#60714f}
+.nl-library-index i{width:65px;border-top:1px solid #9eae8e}
+.nl-course-discovery .nl-course-grid{gap:22px}
+.nl-course-discovery .nl-course{position:relative;border-radius:5px;background:transparent;border-top:1px solid #cbd5bf;box-shadow:none;padding:0 0 18px;overflow:visible;transition:transform .25s ease}
+.nl-course-discovery .nl-course:hover{transform:translateY(-5px);box-shadow:none}
+.nl-course-discovery .nl-course>img{height:220px;border-radius:5px;margin:0 0 18px;object-fit:cover}
+.nl-course-discovery .nl-course>span,.nl-course-discovery .nl-course h3,.nl-course-discovery .nl-course>p,.nl-course-discovery .nl-course>div{margin-left:2px;margin-right:2px}
+.nl-course-discovery .nl-course h3{font-size:20px;margin-top:9px;min-height:54px}
+.nl-course-discovery .nl-course>p{margin-top:9px;margin-bottom:20px}
+.nl-course-discovery .nl-course>div{border-color:#cbd5bf}
+.nl-course-discovery .nl-course>div>strong{background:transparent;padding:0}
+.nl-learning-studio{display:none}
+.nl-cta{display:grid;grid-template-columns:1.05fr .95fr;align-items:center;gap:20px;text-align:left;margin-block:75px;padding:30px 48px;min-height:365px;background:#edf2e5;border-radius:8px;overflow:hidden}
+.nl-cta-copy{position:relative;z-index:1}.nl-cta .nl-eyebrow{color:#506c47}.nl-cta h2{font-size:clamp(38px,4.5vw,56px);letter-spacing:-2px;color:var(--green)}.nl-cta h2 span{color:#71894f}.nl-cta>p{max-width:390px;color:#5c6b5a;line-height:1.8;margin:18px 0 23px}
+.nl-cta-visual{align-self:stretch;min-height:300px;position:relative;display:grid;place-items:center;background:#dde9ce;border-radius:5px;overflow:hidden}
+.nl-cta-visual:before{content:'';position:absolute;width:230px;height:230px;border:1px solid #78955b70;border-radius:50%;box-shadow:0 0 0 26px #d4e3c650,0 0 0 52px #d4e3c630}
+.nl-cta-visual>img{position:relative;width:min(100%,350px);height:320px;object-fit:contain;animation:nl-roadmap-person 5s ease-in-out infinite}
+.nl-cta-star{position:absolute;right:12%;top:12%;color:#7d984d;animation:nl-token-float 5s ease-in-out infinite}
+.nl-mobile-scrim{display:none}
+@keyframes nl-roadmap-person{0%,100%{transform:translateY(2px) rotate(-1deg)}50%{transform:translateY(-7px) rotate(1deg)}}
+@media(max-width:850px){.nl-roadmap-photo{height:200px}.nl-roadmap-stage p{min-height:0}.nl-cta{padding:28px;grid-template-columns:1fr 0.8fr;min-height:330px}.nl-cta-visual{min-height:260px}.nl-cta-visual>img{height:270px}.nl-library-aside{gap:16px}.nl-library-index i{width:35px}}
+@media(max-width:600px){.nl-header{z-index:12}.nl-desktop-login{display:none}.nl-menu-button{padding:10px;margin-right:-8px}.nl-mobile-scrim{display:block;position:fixed;inset:0;z-index:9;border:0;background:#061c16a6;backdrop-filter:blur(3px)}.nl-mobile-nav{position:fixed;z-index:10;inset:0 0 0 auto;width:min(86vw,355px);padding:26px 24px 30px;background:var(--green);display:flex;flex-direction:column;gap:0;box-shadow:-18px 0 50px #00181130;animation:nl-drawer-in .24s ease-out}.nl-mobile-nav-heading{display:flex;align-items:center;justify-content:space-between;color:#c8ddce;font-size:12px;font-weight:700;letter-spacing:1.3px;text-transform:uppercase;border-bottom:1px solid #ffffff27;padding-bottom:23px;margin-bottom:16px}.nl-mobile-nav-heading button{display:grid;place-items:center;width:42px;height:42px;border:1px solid #ffffff35;border-radius:50%;background:transparent;color:white}.nl-mobile-nav>a{display:flex;justify-content:space-between;align-items:center;color:white;padding:17px 2px;border-bottom:1px solid #ffffff20;font-size:15px}.nl-mobile-nav-actions{margin-top:auto;display:grid;gap:12px}.nl-mobile-login{display:flex;justify-content:space-between;align-items:center;color:white;border:1px solid #ffffff55;padding:14px 17px;min-height:50px;border-radius:4px;font-size:14px;font-weight:600}.nl-mobile-nav-actions .nl-button{justify-content:space-between}.nl-roadmap{gap:0}.nl-roadmap-stage{padding-left:0;padding-bottom:32px}.nl-roadmap-stage:not(:last-child):before{display:none}.nl-roadmap-milestone{display:none}.nl-roadmap-stage>a{padding:0 0 18px}.nl-roadmap-photo{height:260px;margin-bottom:18px}.nl-roadmap-stage h3{font-size:23px}.nl-roadmap-stage p{min-height:0}.nl-roadmap-link{margin-top:10px}.nl-course-discovery:before{width:250px;height:250px;right:-160px;top:-100px;box-shadow:0 0 0 20px #eff1e6,0 0 0 21px #dae1cd,0 0 0 42px #f5f5ed,0 0 0 43px #dae1cd}.nl-course-discovery .nl-library-heading{display:block;margin-top:0;margin-bottom:28px}.nl-course-discovery h2{font-size:42px;letter-spacing:-1.5px}.nl-library-aside{justify-content:space-between;margin-top:23px}.nl-course-discovery .nl-library-heading p{font-size:13px}.nl-course-discovery .nl-course-grid{grid-template-columns:1fr}.nl-course-discovery .nl-course{padding-bottom:21px}.nl-course-discovery .nl-course>img{height:220px}.nl-course-discovery .nl-course h3{font-size:22px;min-height:0}.nl-cta{grid-template-columns:1fr;gap:20px;margin-block:42px;padding:27px 23px 22px;min-height:0}.nl-cta h2{font-size:39px;letter-spacing:-1.4px}.nl-cta>p{font-size:13px;margin:14px 0 20px}.nl-cta-visual{min-height:220px}.nl-cta-visual>img{height:230px;width:270px}.nl-cta-star{width:30px;right:10%;top:12%}}
+@keyframes nl-drawer-in{from{transform:translateX(28px);opacity:.5}to{transform:translateX(0);opacity:1}}
+@media(prefers-reduced-motion:reduce){.nl-roadmap-photo>img,.nl-cta-visual>img{animation:none}}
+.nl-graduation-cap{position:absolute;z-index:2;left:50%;top:28%;color:#063e33;filter:drop-shadow(0 5px 4px #172b2830);animation:nl-cap-toss 3.3s cubic-bezier(.45,0,.55,1) infinite}
+@keyframes nl-cap-toss{0%,18%,100%{transform:translate(-50%,10px) rotate(-10deg)}45%,65%{transform:translate(-50%,-34px) rotate(8deg)}82%{transform:translate(-50%,-4px) rotate(-4deg)}}
+.nl-cta-visual{background:radial-gradient(circle at 50% 48%,#edf5dc 0 26%,transparent 27%),linear-gradient(145deg,#e2edcf,#d3e2c2)}
+.nl-cta-book{position:absolute;left:50%;width:205px;height:34px;border-radius:7px;transform:translateX(-50%) skewY(-5deg);box-shadow:0 8px 0 #6e8c56}
+.nl-cta-book-back{bottom:52px;background:#8cac68;width:230px}
+.nl-cta-book-front{bottom:92px;background:#fff9e7;border-bottom:7px solid #718d5a;padding:12px 30px;display:flex;flex-direction:column;gap:5px;box-shadow:0 8px 0 #c5d7a7}
+.nl-cta-book-front span{height:2px;width:84%;background:#d8dfc8}.nl-cta-book-front span:nth-child(2){width:67%}.nl-cta-book-front span:nth-child(3){width:78%}
+.nl-cta-person{position:absolute;width:116px;height:188px;bottom:108px;left:calc(50% - 58px);animation:nl-cta-sway 4.5s ease-in-out infinite;transform-origin:bottom center}
+.nl-cta-face{position:absolute;width:66px;height:76px;top:35px;left:25px;border-radius:45% 45% 48% 48%;background:#b96f4f;z-index:2}
+.nl-cta-hair{position:absolute;z-index:3;top:26px;left:20px;width:76px;height:48px;background:#23392e;border-radius:50% 50% 38% 38%}
+.nl-cta-face i{position:absolute;top:34px;left:16px;width:5px;height:5px;background:#18372d;border-radius:50%}.nl-cta-face i:nth-child(2){left:45px}.nl-cta-face b{position:absolute;left:27px;top:49px;width:14px;height:7px;border-bottom:2px solid #733f39;border-radius:50%}
+.nl-cta-body{position:absolute;bottom:0;left:3px;width:110px;height:105px;border-radius:52px 52px 8px 8px;background:#0d5846}
+.nl-cta-cap{position:absolute;z-index:4;left:calc(50% - 39px);top:39px;color:#063e33;animation:nl-cta-cap-bob 3s ease-in-out infinite}
+@keyframes nl-cta-sway{0%,100%{transform:rotate(-2deg)}50%{transform:rotate(2deg)}}
+@keyframes nl-cta-cap-bob{0%,100%{transform:translateY(0) rotate(-5deg)}50%{transform:translateY(-20px) rotate(6deg)}}
+@media(prefers-reduced-motion:reduce){.nl-graduation-cap,.nl-cta-person,.nl-cta-cap{animation:none}}
+/* CTA uses the former study panel's dark editorial treatment */
+.nl-trust-item{transition:transform .28s ease!important;text-decoration:none!important}
+.nl-trust-item:hover,.nl-trust-item:focus-visible{transform:scale(1.06)!important;background:transparent!important;box-shadow:none!important;outline:none!important}
+.nl-trust-item:hover strong,.nl-trust-item:focus-visible strong{color:var(--green);text-decoration:none!important}
+.nl-trust-item:hover span,.nl-trust-item:focus-visible span{text-decoration:none!important}
+.nl-cta{background:var(--green);color:white;min-height:420px;padding:48px 52px;border-radius:10px;margin-block:75px}
+.nl-cta .nl-eyebrow{color:#d6e9d2}
+.nl-cta h2{font-size:clamp(34px,3.6vw,46px);font-weight:500;line-height:1.18;letter-spacing:-1.3px;color:#f4f5ed}
+.nl-cta h2 span{color:var(--lime)}
+.nl-cta>p{color:#c4d8cd;max-width:400px;font-size:14px;line-height:1.85;margin:20px 0 27px}
+.nl-cta .nl-button{box-shadow:none}
+.nl-cta-secondary{display:flex;align-items:center;gap:9px;width:max-content;color:#dce9e0;font-size:11px;margin-top:18px;min-height:38px}
+.nl-cta-secondary:hover{text-decoration:underline;text-underline-offset:4px}
+.nl-cta-visual{background:radial-gradient(ellipse at 52% 56%,#1d624d 0 34%,transparent 35%);min-height:330px;overflow:visible}
+.nl-cta-visual:before{width:300px;height:300px;border-color:#c5e5c92e;box-shadow:0 0 0 28px #c5e5c914,0 0 0 56px #c5e5c910}
+.nl-cta-visual>img{position:relative;z-index:1;width:min(100%,440px);height:390px;object-fit:contain;filter:drop-shadow(0 20px 30px #001a1538);animation:nl-learner-breathe 6s ease-in-out infinite}
+.nl-cta-star{z-index:2;color:var(--lime)}
+.nl-graduation-cap{display:none}
+@media(max-width:850px){.nl-cta{min-height:360px;padding:34px}.nl-cta-visual{min-height:280px}.nl-cta-visual>img{height:310px}}
+@media(max-width:600px){.nl-cta{margin-block:42px;padding:29px 24px 22px;min-height:0;gap:10px}.nl-cta h2{font-size:36px;line-height:1.2}.nl-cta>p{font-size:13px;margin:16px 0 21px}.nl-cta-visual{min-height:220px}.nl-cta-visual:before{width:210px;height:210px}.nl-cta-visual>img{width:280px;height:250px}.nl-cta-secondary{font-size:10px}}
+@media(prefers-reduced-motion:reduce){.nl-cta-visual>img{animation:none}}
+/* Stage directory and closing invitation */
+#journey-title span{color:#698351}
+.nl-stage-directory{grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;margin-top:42px}
+.nl-stage-directory .nl-roadmap-milestone{display:none}
+.nl-stage-directory .nl-roadmap-stage{padding:0}
+.nl-stage-directory .nl-roadmap-stage:before{display:none}
+.nl-stage-directory .nl-roadmap-stage>a{display:grid;grid-template-columns:42% 1fr;gap:25px;padding:24px;border:1px solid #dce3d4;border-radius:12px;background:#fff!important;align-items:center;height:100%}
+.nl-stage-directory .nl-roadmap-photo{height:240px;width:100%;margin:0;border-radius:90px 90px 8px 8px}
+.nl-stage-directory .nl-roadmap-photo>img{animation:none;object-fit:cover}
+.nl-stage-directory .nl-stage-copy{display:flex;flex-direction:column;min-height:230px}
+.nl-stage-directory .nl-roadmap-label{margin:0 0 8px;font-size:10px}
+.nl-stage-directory .nl-roadmap-stage h3{font-size:24px;line-height:1.2;margin:0 0 14px}
+.nl-stage-directory .nl-roadmap-stage p{min-height:0;margin:0 0 20px;font-size:13px}
+.nl-stage-directory .nl-roadmap-link{margin-top:auto;font-size:11px}
+.nl-cta{padding:48px 60px;gap:40px;min-height:390px;border-radius:14px;background:#063e33}
+.nl-cta h2{font-weight:600;font-size:44px;line-height:1.16;letter-spacing:-1.4px;max-width:440px}
+.nl-cta-copy>p{font-size:14px;color:#bfd3c8;max-width:370px;line-height:1.85;margin:22px 0 28px}
+.nl-cta-visual{background:transparent;min-height:300px}
+.nl-cta-visual:before,.nl-cta-star{display:none}
+.nl-cta-visual>img{height:330px;width:100%;max-width:430px;animation:none;filter:none}
+@media(max-width:850px){.nl-stage-directory{grid-template-columns:1fr}.nl-stage-directory .nl-roadmap-photo{height:220px}.nl-cta{padding:35px;gap:24px}.nl-cta h2{font-size:36px}}
+@media(max-width:600px){.nl-stage-directory{gap:18px;margin-top:28px}.nl-stage-directory .nl-roadmap-stage>a{grid-template-columns:1fr;gap:20px;padding:22px}.nl-stage-directory .nl-roadmap-photo{height:250px;max-width:none;border-radius:100px 100px 8px 8px}.nl-stage-directory .nl-stage-copy{min-height:0}.nl-stage-directory .nl-roadmap-stage h3{font-size:25px}.nl-cta{padding:32px 25px;gap:12px}.nl-cta h2{font-size:35px}.nl-cta-copy>p{font-size:13px;margin:18px 0 24px}.nl-cta-visual>img{height:240px}}
