@@ -238,12 +238,12 @@
 .nudra-landing .nl-cta .nl-eyebrow,.nudra-landing .nl-cta-secondary{color:#dbe9df}
 .nudra-landing .nl-cta-copy>p{color:#c7dbd0}
 .nudra-landing .nl-cta-visual>img{width:100%}
-.nudra-landing .nl-footer{background:var(--green);color:white;border-top:0}
-.nudra-landing .nl-footer .nl-brand,.nudra-landing .nl-footer h3{color:white}
-.nudra-landing .nl-footer .nl-brand-dot{color:var(--lime)}
-.nudra-landing .nl-footer-top :is(p,a:not(.nl-brand)){color:#c7dbd0}
-.nudra-landing .nl-footer-top a:hover{color:var(--lime)}
-.nudra-landing .nl-footer-bottom{border-color:#ffffff25;color:#c7dbd0}
+.nudra-landing .nl-footer{background:#fff;color:var(--green);border-top:0}
+.nudra-landing .nl-footer .nl-brand,.nudra-landing .nl-footer h3{color:var(--green)}
+.nudra-landing .nl-footer .nl-brand-dot{color:#63815c}
+.nudra-landing .nl-footer-top :is(p,a:not(.nl-brand)){color:#52685d}
+.nudra-landing .nl-footer-top a:hover{color:var(--green)}
+.nudra-landing .nl-footer-bottom{border-color:#063e3320;color:#52685d}
 .nudra-landing .nl-trust{background:var(--green);border:0;color:white}
 .nudra-landing .nl-trust-heading h2{color:white}
 .nudra-landing .nl-trust-heading h2 span{color:var(--lime)}
@@ -303,3 +303,32 @@
  .nudra-landing .nl-cta h2{font-size:36px}
  .nudra-landing .nl-mobile-nav{border-radius:25px 0 0 25px}
 }
+
+/* A forest-green closing chapter with a luminous lime invitation. */
+.nudra-landing .nl-closing{background:#063e33;padding-bottom:100px;display:flow-root}
+.nudra-landing .nl-contact{background:transparent;border:0;color:#faf9f3}
+.nudra-landing .nl-contact-heading h2{color:#faf9f3}
+.nudra-landing .nl-contact-heading h2 span{color:var(--lime);font-style:normal}
+.nudra-landing .nl-contact .nl-eyebrow{color:var(--lime)}
+.nudra-landing .nl-contact-heading>p,.nudra-landing .nl-map-note{color:#c7dbd0}
+.nudra-landing .nl-contact-map-art{filter:sepia(.22) saturate(1.35);}
+.nudra-landing :is(.nl-map-label,.nl-contact-email){display:flex;align-items:center;gap:12px;padding:16px 20px;background:rgb(224 243 107 / 78%);color:var(--green);border:1px solid #e0f36b99;border-radius:16px;box-shadow:0 0 18px #e0f36b35,0 8px 28px #e0f36b20;backdrop-filter:blur(12px);transform:none}
+.nudra-landing :is(.nl-map-label,.nl-contact-email) small{color:#52685d;font-size:9px;letter-spacing:1px}
+.nudra-landing :is(.nl-map-label,.nl-contact-email) strong{color:var(--green);font-size:12px}
+.nudra-landing .nl-contact-email>svg{color:var(--green)}
+.nudra-landing .nl-contact-form{background:#fff;color:var(--green);border:1px solid #ffffff80;border-radius:22px;box-shadow:0 16px 45px #001f1926}
+.nudra-landing .nl-contact-form h3,.nudra-landing .nl-contact-form label{color:var(--green)}
+.nudra-landing .nl-contact-form>p,.nudra-landing .nl-contact-form>small{color:#52685d}
+.nudra-landing .nl-contact-form :is(input,textarea,select){background:#f6f8f4;color:var(--green);border-color:#063e3325;border-radius:10px;color-scheme:light}
+.nudra-landing .nl-contact-form :is(input,textarea)::placeholder{color:#6c7f73}
+.nudra-landing .nl-contact-form :is(input,textarea,select):focus{outline:2px solid var(--lime);outline-offset:2px}
+.nudra-landing .nl-contact-form button{background:var(--green);color:#fff}
+.nudra-landing .nl-contact-form button:hover{background:#145643}
+.nudra-landing .nl-closing .nl-cta{margin-block:0;background:#fff;color:var(--green);border:1px solid #ffffff80;box-shadow:0 0 28px #e0f36b25,0 0 90px #e0f36b15}
+.nudra-landing .nl-closing .nl-cta h2,.nudra-landing .nl-closing .nl-cta h2 span{color:var(--green)}
+.nudra-landing .nl-closing .nl-cta .nl-eyebrow,.nudra-landing .nl-closing .nl-cta-copy>p,.nudra-landing .nl-closing .nl-cta-secondary{color:#234f36}
+.nudra-landing .nl-closing .nl-cta .nl-button{background:var(--green);color:#fff}
+.nudra-landing .nl-closing .nl-cta .nl-button:hover{background:#145643;box-shadow:0 5px 18px #063e3325}
+.nudra-landing .nl-closing .nl-cta-visual>img{filter:none;mix-blend-mode:normal}
+@media(max-width:850px){.nudra-landing .nl-closing{padding-bottom:70px}}
+@media(max-width:600px){.nudra-landing .nl-closing{padding-bottom:60px}.nudra-landing .nl-closing .nl-cta{box-shadow:0 0 22px #e0f36b40,0 0 55px #e0f36b20}}
