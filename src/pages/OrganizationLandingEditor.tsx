@@ -101,6 +101,7 @@ export default function OrganizationLandingEditor() {
     {notice && <p role="status" className="mb-4 rounded-xl bg-emerald-50 p-3 text-sm text-emerald-800">{notice}</p>}
     <div className="overflow-hidden rounded-2xl border border-gray-200 bg-white">
       <Puck key={session} config={config} data={draft} height={fullScreen ? 'calc(100vh - 180px)' : '740px'} headerTitle="Landing Page" headerPath={org.slug + '.nudra.org'}
+        iframe={{ enabled: false }}
         permissions={{ insert: false, delete: false, duplicate: false, drag: !busy, edit: !busy }}
         viewports={[{ width: 1280, label: 'Desktop' }, { width: 768, label: 'Tablet' }, { width: 375, label: 'Mobile' }]}
         overrides={{ headerActions: () => <span className="text-xs text-gray-500">Save and publish using the buttons above</span> }}

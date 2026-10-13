@@ -183,6 +183,21 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
             </Link>
           )}
 
+          {user?.role === 'organization_manager' && (
+            <Link
+              to={`/organization/manage${user.organizationContext ? `?org=${encodeURIComponent(user.organizationContext.slug)}` : ''}`}
+              className="flex items-center justify-between p-3 rounded-full bg-[#e8edda] dark:bg-white/5 hover:bg-[#e0f36b]/40 dark:hover:bg-white/10 text-xs font-bold text-[#063e33] dark:text-white transition-colors group px-4"
+            >
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-[#063e33] dark:bg-[#e0f36b]" />
+                <span>Organization Manager</span>
+              </div>
+              <span className="text-[9px] bg-[#063e33] text-white px-2 py-0.5 rounded-full font-bold">
+                ORG
+              </span>
+            </Link>
+          )}
+
           <div className="px-3 pt-1 text-[10px] text-[#66736b] dark:text-slate-500 flex items-center justify-between">
             <span className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-[#63815c] dark:bg-[#e0f36b]" />

@@ -9,7 +9,7 @@ import { decryptMfaSecret, verifyTotp } from '../lib/totp';
 import { queueEmail } from '../lib/emailOutbox';
 import { createRateLimiter } from '../middleware/rateLimit';
 import { db } from '../db';
-import { users, sessions, instructorApplications, passwordResetTokens, orgMemberships } from '../db/schema';
+import { users, sessions, instructorApplications, passwordResetTokens, orgMemberships, organizations } from '../db/schema';
 import { requireAuth } from '../middleware/requireAuth';
 import { sendWelcomeEmail, sendPasswordResetEmail } from '../lib/mailer';
 import { createNotification } from '../lib/notifications';
@@ -75,18 +75,55 @@ const publicUser = (user: typeof users.$inferSelect) => ({
 });
 
 async function responseUser(req: Request, user: typeof users.$inferSelect) {
-  if (!req.organization) return publicUser(user);
-  const [membership] = await db.select({ id: orgMemberships.id, role: orgMemberships.role, status: orgMemberships.status })
-    .from(orgMemberships).where(and(eq(orgMemberships.orgId, req.organization.id), eq(orgMemberships.userId, user.id))).limit(1);
+  let targetOrg = req.organization;
+  let targetMembership: { id: string; role: string; status: string } | null = null;
+
+  if (targetOrg) {
+    const [membership] = await db
+      .select({ id: orgMemberships.id, role: orgMemberships.role, status: orgMemberships.status })
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.orgId, targetOrg.id), eq(orgMemberships.userId, user.id)))
+      .limit(1);
+    targetMembership = membership ?? null;
+  } else if (user.role === 'organization_manager' || user.organizationId) {
+    const orgCondition = user.organizationId ? eq(organizations.id, user.organizationId) : undefined;
+    const [row] = await db
+      .select({
+        org: organizations,
+        membership: {
+          id: orgMemberships.id,
+          role: orgMemberships.role,
+          status: orgMemberships.status,
+        },
+      })
+      .from(orgMemberships)
+      .innerJoin(organizations, eq(orgMemberships.orgId, organizations.id))
+      .where(
+        and(
+          eq(orgMemberships.userId, user.id),
+          eq(orgMemberships.status, 'active'),
+          ...(orgCondition ? [orgCondition] : [])
+        )
+      )
+      .limit(1);
+
+    if (row) {
+      targetOrg = row.org;
+      targetMembership = row.membership;
+    }
+  }
+
+  if (!targetOrg) return publicUser(user);
+
   return {
     ...publicUser(user),
     organizationContext: {
-      id: req.organization.id,
-      name: req.organization.name,
-      slug: req.organization.slug,
-      logoUrl: req.organization.logoUrl,
-      primaryColor: req.organization.primaryColor,
-      membership: membership ?? null,
+      id: targetOrg.id,
+      name: targetOrg.name,
+      slug: targetOrg.slug,
+      logoUrl: targetOrg.logoUrl,
+      primaryColor: targetOrg.primaryColor,
+      membership: targetMembership,
     },
   };
 }

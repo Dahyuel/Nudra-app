@@ -28,7 +28,7 @@ export const useMyEnrollments = () => {
       const { data } = await api.get('/api/courses/my-courses/list');
       return data.enrollments as EnrollmentItem[];
     },
-    enabled: !!user,
+    enabled: !!user && user.role === 'student',
   });
 
   return { enrollments: query.data ?? [], isLoading: query.isLoading, error: query.error };

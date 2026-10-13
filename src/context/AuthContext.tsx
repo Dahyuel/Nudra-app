@@ -48,16 +48,19 @@ const authErrorMessage = (err: any, fallback: string) => {
 };
 
 export const homePathFor = (user: User) => {
+  if (user.role === 'organization_manager') {
+    const orgQuery = user.organizationContext?.slug ? `?org=${encodeURIComponent(user.organizationContext.slug)}` : '';
+    return `/organization/manage${orgQuery}`;
+  }
   if (user.organizationContext) {
     const membership = user.organizationContext.membership;
     const organizationQuery = `?org=${encodeURIComponent(user.organizationContext.slug)}`;
-    if (membership?.status === 'active' && membership.role === 'organization_manager') return `/organization/manage${organizationQuery}`;
     if (membership?.status === 'active' && membership.role === 'instructor' && isApprovedInstructor(user)) return `/instructor/dashboard${organizationQuery}`;
     return `/organization${organizationQuery}`;
   }
   if (user.role === 'admin') return '/admin';
-  if (user.role !== 'instructor') return '/dashboard';
-  return isApprovedInstructor(user) ? '/instructor/dashboard' : '/instructor/pending';
+  if (user.role === 'instructor') return isApprovedInstructor(user) ? '/instructor/dashboard' : '/instructor/pending';
+  return '/dashboard';
 };
 
 interface AuthContextValue {

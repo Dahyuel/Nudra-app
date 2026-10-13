@@ -130,20 +130,29 @@ router.get('/public-current', async (req: Request, res: Response, next) => {
 });
 
 async function landingManagerAccess(req: Request) {
-  return Boolean(req.organization?.id === req.params.orgId &&
-    (req.user && await canManageOrganization(req.params.orgId, req.user.id, req.user.role)));
+  const orgId = req.params.orgId;
+  const matchesOrg = !req.organization || req.organization.id === orgId;
+  return Boolean(matchesOrg &&
+    (req.user && await canManageOrganization(orgId, req.user.id, req.user.role)));
 }
 
 router.get('/:orgId/landing-page', requireAuth, async (req: Request, res: Response, next) => {
   try {
     if (!(await landingManagerAccess(req))) return res.status(403).json({ message: 'Organization manager access required.' });
+    let org = req.organization;
+    if (!org) {
+      const [resolvedOrg] = await db.select().from(organizations).where(eq(organizations.id, req.params.orgId)).limit(1);
+      org = resolvedOrg;
+    }
+    if (!org) return res.status(404).json({ message: 'Organization not found.' });
+
     const [page] = await db.select().from(organizationLandingPages).where(eq(organizationLandingPages.orgId, req.params.orgId)).limit(1);
     const historyResult = await db.execute(sql`SELECT revision, actor_id AS "actorId", created_at AS "createdAt",
         (published IS NOT NULL) AS published
       FROM organization_landing_page_versions WHERE org_id=${req.params.orgId}
       ORDER BY revision DESC LIMIT 30`);
     res.set('Cache-Control', 'no-store');
-    return res.json({ draft: page?.draft ?? defaultLandingPage(req.organization!), defaultData: defaultLandingPage(req.organization!), revision: page?.revision ?? 0,
+    return res.json({ draft: page?.draft ?? defaultLandingPage(org), defaultData: defaultLandingPage(org), revision: page?.revision ?? 0,
       publishedAt: page?.publishedAt ?? null, updatedAt: page?.updatedAt ?? null,
       history: historyResult.rows,
       courses: await publicOrganizationCourses(req.params.orgId) });
@@ -221,7 +230,21 @@ router.post('/:orgId/landing-page/restore', requireAuth, async (req: Request, re
 });
 
 router.get('/current', requireAuth, async (req: Request, res: Response) => {
-  const org = req.organization;
+  let org = req.organization;
+  if (!org && req.user) {
+    const [row] = await db
+      .select({ org: organizations })
+      .from(orgMemberships)
+      .innerJoin(organizations, eq(orgMemberships.orgId, organizations.id))
+      .where(
+        and(
+          eq(orgMemberships.userId, req.user.id),
+          eq(orgMemberships.status, 'active')
+        )
+      )
+      .limit(1);
+    if (row) org = row.org;
+  }
   if (!org) return res.status(404).json({ message: 'Open an organization domain to continue.' });
   const [membership] = await db.select({ membership: orgMemberships }).from(orgMemberships)
     .innerJoin(users, eq(orgMemberships.userId, users.id)).where(and(

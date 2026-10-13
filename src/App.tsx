@@ -88,6 +88,10 @@ const PublicOnlyRoute: React.FC<{ children: React.ReactNode }> = ({ children }) 
 const DashboardShell: React.FC = () => {
   const { user } = useAuth();
   const location = useLocation();
+  if (user?.role === 'organization_manager' && !location.pathname.startsWith('/organization') && !['/settings', '/help'].includes(location.pathname)) {
+    const orgQuery = user.organizationContext ? `?org=${encodeURIComponent(user.organizationContext.slug)}` : '';
+    return <Navigate to={`/organization/manage${orgQuery}`} replace />;
+  }
   if (user?.organizationContext && user.role === 'student' &&
       !location.pathname.startsWith('/organization') && !location.pathname.startsWith('/course/') &&
       !['/settings', '/help'].includes(location.pathname)) {
@@ -100,6 +104,10 @@ const DashboardShell: React.FC = () => {
 
 const StudentPortalLayout: React.FC = () => {
   const { user } = useAuth();
+  if (user?.role === 'organization_manager') {
+    const orgQuery = user.organizationContext ? `?org=${encodeURIComponent(user.organizationContext.slug)}` : '';
+    return <Navigate to={`/organization/manage${orgQuery}`} replace />;
+  }
   return user?.organizationContext && user.role === 'student' ? <OrganizationLayout /> : <DashboardLayout />;
 };
 

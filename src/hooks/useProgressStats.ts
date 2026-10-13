@@ -44,7 +44,7 @@ export const useProgressStats = () => {
       const { data } = await api.get('/api/stats/overview');
       return data as ProgressStats;
     },
-    enabled: !!user,
+    enabled: !!user && user.role === 'student',
   });
 
   return { stats: query.data ?? null, isLoading: query.isLoading, error: query.error };

@@ -2,7 +2,10 @@ import { z } from 'zod';
 
 const short = z.string().trim().max(180);
 const paragraph = z.string().trim().max(4000);
-const image = z.union([z.literal(''), z.string().max(2048).url().refine((url) => /^https?:\/\//i.test(url), 'Use an HTTP or HTTPS image URL.')]);
+const image = z.union([
+  z.literal(''),
+  z.string().max(2048).refine((url) => /^https?:\/\//i.test(url) || /^\/[a-zA-Z0-9_\-./]+$/i.test(url), 'Use an HTTP, HTTPS, or root-relative image URL.'),
+]);
 const common = { id: z.string().min(1).max(100), enabled: z.enum(['yes', 'no']) };
 const section = z.discriminatedUnion('type', [
   z.object({ type: z.literal('Hero'), props: z.object({ ...common, eyebrow: short, title: short.min(1), description: paragraph, imageUrl: image, buttonLabel: short.min(1) }).strict() }).strict(),
@@ -36,10 +39,10 @@ export type LandingData = z.infer<typeof landingPageSchema>;
 
 export function defaultLandingPage(org: { name: string; primaryColor: string | null }): LandingData {
   return {
-    root: { props: { primaryColor: org.primaryColor || '#2D6A4F', backgroundColor: '#F8FAF9', textColor: '#172B23', radius: 'soft' } },
+    root: { props: { primaryColor: org.primaryColor || '#063e33', backgroundColor: '#faf9f3', textColor: '#182b25', radius: 'soft' } },
     content: [
-      { type: 'Hero', props: { id: 'hero', enabled: 'yes', eyebrow: 'Learn. Grow. Go further.', title: 'Your next chapter starts at ' + org.name, description: 'Explore expert-led courses and practical learning experiences designed to help you take your next step.', imageUrl: '', buttonLabel: 'Start learning' } },
-      { type: 'About', props: { id: 'about', enabled: 'yes', title: 'A learning space built for you', description: 'At ' + org.name + ', we bring learners and instructors together through online courses and in-person experiences.', imageUrl: '' } },
+      { type: 'Hero', props: { id: 'hero', enabled: 'yes', eyebrow: 'Learn. Grow. Go further.', title: 'Your next chapter starts at ' + org.name, description: 'Explore expert-led courses and practical learning experiences designed to help you take your next step.', imageUrl: '/images/landing/editorial/organizations-dark.png', buttonLabel: 'Start learning' } },
+      { type: 'About', props: { id: 'about', enabled: 'yes', title: 'A learning sanctuary built for you', description: 'At ' + org.name + ', we bring learners and instructors together through online courses and in-person experiences.', imageUrl: '/images/landing/editorial/org-team.png' } },
       { type: 'Features', props: { id: 'features', enabled: 'yes', title: 'Make progress your way', items: [{ title: 'Expert instructors', description: 'Learn from people who know their subject and care about your progress.' }, { title: 'Flexible learning', description: 'Find online courses and in-person sessions that fit your goals.' }, { title: 'A place to grow', description: 'Build knowledge and practical skills, one course at a time.' }] } },
       { type: 'Courses', props: { id: 'courses', enabled: 'yes', title: 'Explore our courses', description: 'Discover what you can learn next.', delivery: 'all', limit: 6 } },
       { type: 'FAQ', props: { id: 'faq', enabled: 'yes', title: 'A few things you might want to know', items: [{ question: 'How do I join?', answer: 'Create a student account and request to join our organization. Our team will review your request.' }, { question: 'Can I attend in person?', answer: 'Courses marked as offline include booking information, a location, and a schedule.' }] } },

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LogOut, Settings, HelpCircle, Moon, Sun, GraduationCap } from 'lucide-react';
+import { LogOut, Settings, HelpCircle, Moon, Sun, GraduationCap, Building2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 
@@ -90,12 +90,22 @@ export const ProfileMenu: React.FC<ProfileMenuProps> = ({ align = 'left', showNa
             <>
               <button
                 onClick={() => go('/student-portal')}
-                className="w-full flex items-center gap-2 text-left px-3 py-2 text-xs font-bold text-[#2D6A4F] dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-colors"
+                className="w-full flex items-center gap-2 text-left px-3 py-2 text-xs font-bold text-[#2D6A4F] dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-900/20 rounded-xl transition-colors cursor-pointer"
               >
                 <GraduationCap className="w-3.5 h-3.5" />
                 <span>Student Portal</span>
               </button>
             </>
+          )}
+
+          {user?.role === 'organization_manager' && (
+            <button
+              onClick={() => go(`/organization/manage${user.organizationContext ? `?org=${encodeURIComponent(user.organizationContext.slug)}` : ''}`)}
+              className="w-full flex items-center gap-2 text-left px-3 py-2 text-xs font-bold text-[#063e33] dark:text-emerald-400 hover:bg-[#e8edda]/60 dark:hover:bg-white/5 rounded-xl transition-colors cursor-pointer"
+            >
+              <Building2 className="w-3.5 h-3.5" />
+              <span>Organization Manager</span>
+            </button>
           )}
 
           <button

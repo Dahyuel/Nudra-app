@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, Navigate } from 'react-router-dom';
 import {
   ArrowRight,
   ArrowUpRight,
@@ -17,7 +17,7 @@ import {
   HelpCircle,
   Users,
 } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth, homePathFor } from '../context/AuthContext';
 import { PageErrorBanner } from '../components/PageErrorBanner';
 import { WeeklyChart } from '../components/WeeklyChart';
 import { useMyEnrollments } from '../hooks/useMyEnrollments';
@@ -79,6 +79,10 @@ export const DashboardPage: React.FC = () => {
   const { stats, error: statsError } = useProgressStats();
 
   const [activeFilter, setActiveFilter] = useState<'all' | 'in-progress' | 'completed'>('in-progress');
+
+  if (user?.role === 'organization_manager') {
+    return <Navigate to={homePathFor(user)} replace />;
+  }
 
   const firstName = user?.name?.trim().split(/\s+/)[0] || 'Learner';
   const inProgress = enrollments.filter((e) => e.progress < 100);
