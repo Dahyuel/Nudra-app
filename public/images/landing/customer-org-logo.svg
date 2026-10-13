@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <defs>
+    <linearGradient id="orgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F766E"/>
+      <stop offset="100%" stop-color="#115E59"/>
+    </linearGradient>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FDE047"/>
+      <stop offset="100%" stop-color="#EAB308"/>
+    </linearGradient>
+  </defs>
+  <!-- Shield Background -->
+  <rect x="6" y="6" width="108" height="108" rx="28" fill="url(#orgGrad)" />
+  <rect x="10" y="10" width="100" height="100" rx="24" fill="none" stroke="rgba(255,255,255,0.18)" stroke-width="2"/>
+  
+  <!-- Laurel / Wreath & Star Accent -->
+  <circle cx="60" cy="28" r="4" fill="url(#goldGrad)" />
+  <path d="M 40 38 Q 30 55 42 75 Q 46 82 60 88 Q 74 82 78 75 Q 90 55 80 38" fill="none" stroke="rgba(255,255,255,0.25)" stroke-width="2" stroke-linecap="round"/>
+  
+  <!-- Graduation Cap -->
+  <path d="M 60 40 L 88 50 L 60 60 L 32 50 Z" fill="#FFFFFF"/>
+  <path d="M 42 55.5 L 42 67 C 42 73 78 73 78 67 L 78 55.5" fill="#FFFFFF" opacity="0.95"/>
+  <!-- Tassel -->
+  <path d="M 82 52.5 L 82 68 C 82 70 85 71 85 74" fill="none" stroke="url(#goldGrad)" stroke-width="2.5" stroke-linecap="round"/>
+  <circle cx="85" cy="75" r="2.5" fill="url(#goldGrad)"/>
+
+  <!-- Open Book Base -->
+  <path d="M 40 76 Q 60 73 60 78 Q 60 73 80 76 L 78 86 Q 60 83 60 88 Q 60 83 42 86 Z" fill="url(#goldGrad)"/>
+</svg>

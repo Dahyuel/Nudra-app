@@ -33,7 +33,7 @@ function foreground(primary: string) {
 }
 
 const DEFAULT_EDITORIAL_IMAGES = {
-  hero: '/images/landing/editorial/organizations-dark.png',
+  hero: '/images/landing/editorial/org-brand.png',
   about: '/images/landing/editorial/org-team.png',
   courseFallback: '/images/landing/editorial/org-classes.png',
   contact: '/images/landing/editorial/contact.png',
@@ -46,12 +46,12 @@ const DEFAULT_EDITORIAL_IMAGES = {
 };
 
 const MARQUEE_PILLARS = [
-  'Interactive Learning',
-  'Certified Mentors',
-  'Arabic & English',
-  'Practical Projects',
-  'Lifelong Sanctuary',
-  'Flexible Schedules',
+  'Accredited Programs',
+  'Industry-Leading Faculty',
+  'Hands-On Workshops',
+  'Recognized Certificates',
+  'Career Placement Support',
+  'Flexible Learning Tracks',
 ];
 
 export function createLandingConfig(org: LandingOrganization, courses: LandingCourse[], preview = false): Config<LandingComponents, LandingRoot> {
@@ -75,37 +75,44 @@ export function createLandingConfig(org: LandingOrganization, courses: LandingCo
           dir="ltr"
           lang="en"
           style={{
-            '--landing-primary': primaryColor || '#063e33',
+            '--landing-primary': primaryColor || '#0F766E',
             '--landing-bg': backgroundColor || '#faf9f3',
             '--landing-text': textColor || '#182b25',
             '--landing-radius': radius === 'soft' ? '28px' : '4px',
-            '--landing-on-primary': foreground(primaryColor || '#063e33'),
+            '--landing-on-primary': foreground(primaryColor || '#0F766E'),
           } as React.CSSProperties}
         >
           {/* Header */}
           <header className="org-landing-header">
             <div className="org-landing-container org-landing-nav">
-              <a href={'/' + query} onClick={stopPreview} className="org-landing-brand">
-                {logo ? (
-                  <img src={logo} alt="" className="org-landing-brand-logo" />
-                ) : (
-                  <span className="org-landing-brand-icon">
-                    <GraduationCap size={22} />
-                  </span>
-                )}
-                <span className="org-landing-brand-text">
-                  {org.name}
-                  <span className="org-landing-brand-dot">.</span>
-                </span>
-              </a>
+              <div className="org-landing-brand-wrap">
+                <a href={'/' + query} onClick={stopPreview} className="org-landing-brand">
+                  {logo ? (
+                    <img src={logo} alt="" className="org-landing-brand-logo" />
+                  ) : (
+                    <span className="org-landing-brand-icon">
+                      <GraduationCap size={22} />
+                    </span>
+                  )}
+                  <div className="org-landing-brand-col">
+                    <span className="org-landing-brand-text">
+                      {org.name}
+                      <span className="org-landing-brand-dot">.</span>
+                    </span>
+                    <span className="org-landing-platform-badge">
+                      <span className="org-landing-platform-dot">✦</span> Powered by Nudra
+                    </span>
+                  </div>
+                </a>
+              </div>
               <nav aria-label="Organization website" className="org-landing-nav-links">
-                <a href="#about" onClick={stopPreview} className="org-landing-nav-link">About</a>
+                <a href="#about" onClick={stopPreview} className="org-landing-nav-link">About us</a>
                 <a href="#features" onClick={stopPreview} className="org-landing-nav-link">Why us</a>
-                <a href="#courses" onClick={stopPreview} className="org-landing-nav-link">Courses</a>
-                <a href="#faq" onClick={stopPreview} className="org-landing-nav-link">FAQ</a>
-                <a href={login} onClick={stopPreview} className="org-landing-nav-login">Sign in</a>
+                <a href="#courses" onClick={stopPreview} className="org-landing-nav-link">Programs</a>
+                <a href="#faq" onClick={stopPreview} className="org-landing-nav-link">Admissions FAQ</a>
+                <a href={login} onClick={stopPreview} className="org-landing-nav-login">Student Portal</a>
                 <a className="org-landing-button org-landing-button-lime" href={register} onClick={stopPreview}>
-                  <span>Join us</span>
+                  <span>Apply for admission</span>
                   <ArrowUpRight size={15} />
                 </a>
               </nav>
@@ -114,7 +121,7 @@ export function createLandingConfig(org: LandingOrganization, courses: LandingCo
 
           <main id="main-content">{children}</main>
 
-          {/* Deep Forest Editorial Footer */}
+          {/* Customer Academy Editorial Footer */}
           <footer className="org-landing-footer-wrapper">
             <div className="org-landing-container org-landing-footer-top-grid">
               <div className="org-landing-footer-brand-col">
@@ -126,46 +133,53 @@ export function createLandingConfig(org: LandingOrganization, courses: LandingCo
                       <GraduationCap size={22} />
                     </span>
                   )}
-                  <span className="org-landing-brand-text">
-                    {org.name}
-                    <span className="org-landing-brand-dot">.</span>
-                  </span>
+                  <div className="org-landing-brand-col">
+                    <span className="org-landing-brand-text">
+                      {org.name}
+                      <span className="org-landing-brand-dot">.</span>
+                    </span>
+                  </div>
                 </a>
                 <p className="org-landing-footer-sub">
-                  For every stage. For everything you can become. A dedicated learning space powered by Nudra.
+                  An independent educational institution delivering accredited programs, specialized workshops, and practical learning.
                 </p>
                 <div className="org-landing-powered-badge">
                   <span className="org-landing-powered-dot">✦</span>
-                  <span>Verified organization sanctuary</span>
+                  <span>Learning platform powered by <strong>Nudra LMS</strong></span>
                 </div>
               </div>
               <div className="org-landing-footer-col">
-                <h4>Navigation</h4>
-                <a href="#about" onClick={stopPreview}>About our community</a>
-                <a href="#features" onClick={stopPreview}>Why learn with us</a>
-                <a href="#courses" onClick={stopPreview}>Course catalog</a>
-                <a href="#faq" onClick={stopPreview}>Good to know</a>
+                <h4>Academy</h4>
+                <a href="#about" onClick={stopPreview}>About our mission</a>
+                <a href="#features" onClick={stopPreview}>Faculty & excellence</a>
+                <a href="#courses" onClick={stopPreview}>Academic programs</a>
+                <a href="#faq" onClick={stopPreview}>Admissions & tuition</a>
               </div>
               <div className="org-landing-footer-col">
-                <h4>Student Access</h4>
-                <a href={login} onClick={stopPreview}>Sign in to student sanctuary</a>
-                <a href={register} onClick={stopPreview}>Request membership</a>
-                <a href="/help" onClick={stopPreview}>Student help & support</a>
+                <h4>Students</h4>
+                <a href={login} onClick={stopPreview}>Student portal sign in</a>
+                <a href={register} onClick={stopPreview}>Apply for enrollment</a>
+                <a href="#contact" onClick={stopPreview}>Admissions office</a>
               </div>
               <div className="org-landing-footer-col">
-                <h4>Powered by Nudra</h4>
-                <a href="https://nudra.org" target="_blank" rel="noopener noreferrer">
-                  <span>Explore Nudra platform</span>
+                <h4>Platform Security</h4>
+                <div className="org-landing-verified-seal">
+                  <span className="org-landing-seal-icon">🛡️</span>
+                  <div>
+                    <strong>Verified Institution</strong>
+                    <span>Hosted on secure Nudra cloud</span>
+                  </div>
+                </div>
+                <a href="https://nudra.org" target="_blank" rel="noopener noreferrer" className="org-landing-nudra-link">
+                  <span>Learn about Nudra platform</span>
                   <ArrowUpRight size={13} />
                 </a>
-                <a href="/browse" onClick={stopPreview}>Academic catalog</a>
-                <a href="/teach" onClick={stopPreview}>Become an instructor</a>
               </div>
             </div>
             <div className="org-landing-container org-landing-footer-bottom">
-              <span>© {new Date().getFullYear()} {org.name}. All rights reserved.</span>
+              <span>© {new Date().getFullYear()} {org.name}. All institutional rights reserved.</span>
               <span className="org-landing-footer-motto">
-                <span>Made for your next chapter.</span>
+                <span>Infrastructure & LMS by Nudra</span>
                 <Sparkles size={14} className="text-[#a6ba49]" />
               </span>
             </div>
@@ -184,7 +198,7 @@ export function createLandingConfig(org: LandingOrganization, courses: LandingCo
                 <div className="org-landing-hero-copy">
                   <div className="org-landing-eyebrow-pill">
                     <span className="org-landing-sparkle">✦</span>
-                    <span>{props.eyebrow || 'LEARN. GROW. GO FURTHER.'}</span>
+                    <span>{props.eyebrow || 'ACCREDITED DIPLOMAS & PROGRAMS · ENROLLING NOW'}</span>
                   </div>
                   <h1 className="org-landing-hero-title">
                     <span className="org-landing-title-main">{props.title}</span>
@@ -193,23 +207,24 @@ export function createLandingConfig(org: LandingOrganization, courses: LandingCo
                   <p className="org-landing-copy">{props.description}</p>
                   <div className="org-landing-actions">
                     <a className="org-landing-button org-landing-button-lime" href={register} onClick={stopPreview}>
-                      <span>{props.buttonLabel || 'Start learning'}</span>
+                      <span>{props.buttonLabel || 'Apply for admission'}</span>
                       <ArrowUpRight size={18} />
                     </a>
                     <a className="org-landing-button org-landing-button-ghost" href="#courses" onClick={stopPreview}>
-                      <span>Explore courses</span>
+                      <span>Explore programs</span>
                       <ArrowUpRight size={16} />
                     </a>
                   </div>
                   <div className="org-landing-trust-bar">
                     <div className="org-landing-trust-pill">
-                      <span className="org-landing-trust-dot">✦</span>
-                      <span>{courses.length ? `${courses.length} active courses & workshops` : 'A dedicated learning sanctuary'}</span>
+                      <span className="org-landing-trust-star">★ ★ ★ ★ ★</span>
+                      <strong>4.9/5</strong>
+                      <span>Student satisfaction score</span>
                     </div>
                     <div className="org-landing-trust-sub">
-                      <span>Arabic & English instruction</span>
+                      <span>Certified faculty mentorship</span>
                       <span className="org-landing-trust-sep">·</span>
-                      <span>Verified certificates</span>
+                      <span>Verified digital credentials</span>
                     </div>
                   </div>
                 </div>
@@ -229,11 +244,11 @@ export function createLandingConfig(org: LandingOrganization, courses: LandingCo
                       </div>
                       <div className="org-landing-note-text">
                         <strong>{org.name}</strong>
-                        <span>Your pace. Your space ✦</span>
+                        <span>Accredited Learning Center ✦</span>
                       </div>
                     </div>
                     <div className="org-landing-floating-badge">
-                      <span>✦ Practical learning</span>
+                      <span>✦ Verified Academy</span>
                     </div>
                   </div>
                 </div>
@@ -275,39 +290,39 @@ export function createLandingConfig(org: LandingOrganization, courses: LandingCo
                   <Sparkles size={18} />
                 </span>
                 <div>
-                  <strong>A little support goes a long way.</strong>
-                  <p>Learn together. Grow together in {org.name}.</p>
+                  <strong>Academic Excellence & Practical Mastery</strong>
+                  <p>Empowering students and future specialists at {org.name}.</p>
                 </div>
               </div>
             </div>
             <div className="org-landing-about-copy">
               <div className="org-landing-eyebrow-pill">
                 <span className="org-landing-sparkle">✦</span>
-                <span>ABOUT OUR SANCTUARY</span>
+                <span>ABOUT OUR ACADEMY</span>
               </div>
               <h2 className="org-landing-heading-editorial">{props.title}</h2>
               <p className="org-landing-copy">{props.description}</p>
               <div className="org-landing-about-pillars">
                 <div className="org-landing-pillar">
                   <span className="org-landing-pillar-dot">✦</span>
-                  <span>Dedicated educators</span>
+                  <span>Accredited Curriculum</span>
                 </div>
                 <div className="org-landing-pillar">
                   <span className="org-landing-pillar-dot">✦</span>
-                  <span>Curated curriculum</span>
+                  <span>Dedicated Faculty Mentors</span>
                 </div>
                 <div className="org-landing-pillar">
                   <span className="org-landing-pillar-dot">✦</span>
-                  <span>Collaborative space</span>
+                  <span>Modern Interactive Labs</span>
                 </div>
                 <div className="org-landing-pillar">
                   <span className="org-landing-pillar-dot">✦</span>
-                  <span>Real practical progress</span>
+                  <span>Recognized Credentials</span>
                 </div>
               </div>
               <div className="org-landing-about-action">
                 <a href={register} onClick={stopPreview} className="org-landing-text-link">
-                  <span>Join our community</span>
+                  <span>Explore enrollment & admissions</span>
                   <ArrowUpRight size={17} />
                 </a>
               </div>
@@ -556,17 +571,17 @@ export function createLandingConfig(org: LandingOrganization, courses: LandingCo
               <div className="org-landing-cta-content">
                 <div className="org-landing-cta-badge">
                   <GraduationCap size={18} />
-                  <span>Your next chapter starts here</span>
+                  <span>Admissions Open · Academic Year 2026/2027</span>
                 </div>
                 <h2 className="org-landing-cta-title">
-                  {props.title || 'Keep learning. Keep becoming you.'}
+                  {props.title || 'Start Your Educational Journey With ' + org.name}
                 </h2>
                 <p className="org-landing-cta-copy">
-                  {props.description || 'From your first foundations to your next ambition. Take the next step with ' + org.name + '.'}
+                  {props.description || 'Take the decisive step toward your career and academic aspirations. Join our community of motivated students and certified faculty mentors today.'}
                 </p>
                 <div className="org-landing-cta-actions">
                   <a className="org-landing-button org-landing-button-lime" href={register} onClick={stopPreview}>
-                    <span>{props.buttonLabel || 'Let’s start learning'}</span>
+                    <span>{props.buttonLabel || 'Apply for Admission'}</span>
                     <ArrowUpRight size={18} />
                   </a>
                 </div>

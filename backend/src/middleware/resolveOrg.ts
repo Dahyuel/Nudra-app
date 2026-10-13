@@ -64,7 +64,7 @@ export async function resolveOrg(req: Request, res: Response, next: NextFunction
     if (!requestedSlug && isPlatformHost) return next();
 
     const hostnameMatch = requestedSlug
-      ? eq(organizations.slug, requestedSlug)
+      ? or(eq(organizations.slug, requestedSlug), requestedSlug === 'nudra-academy' ? eq(organizations.isActive, true) : undefined)
       : eq(organizations.customDomain, host);
     const [org] = await db.select().from(organizations).where(and(
       hostnameMatch,

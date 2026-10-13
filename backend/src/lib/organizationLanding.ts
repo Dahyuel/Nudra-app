@@ -39,15 +39,23 @@ export type LandingData = z.infer<typeof landingPageSchema>;
 
 export function defaultLandingPage(org: { name: string; primaryColor: string | null }): LandingData {
   return {
-    root: { props: { primaryColor: org.primaryColor || '#063e33', backgroundColor: '#faf9f3', textColor: '#182b25', radius: 'soft' } },
+    root: { props: { primaryColor: org.primaryColor || '#0F766E', backgroundColor: '#faf9f3', textColor: '#182b25', radius: 'soft' } },
     content: [
-      { type: 'Hero', props: { id: 'hero', enabled: 'yes', eyebrow: 'Learn. Grow. Go further.', title: 'Your next chapter starts at ' + org.name, description: 'Explore expert-led courses and practical learning experiences designed to help you take your next step.', imageUrl: '/images/landing/editorial/organizations-dark.png', buttonLabel: 'Start learning' } },
-      { type: 'About', props: { id: 'about', enabled: 'yes', title: 'A learning sanctuary built for you', description: 'At ' + org.name + ', we bring learners and instructors together through online courses and in-person experiences.', imageUrl: '/images/landing/editorial/org-team.png' } },
-      { type: 'Features', props: { id: 'features', enabled: 'yes', title: 'Make progress your way', items: [{ title: 'Expert instructors', description: 'Learn from people who know their subject and care about your progress.' }, { title: 'Flexible learning', description: 'Find online courses and in-person sessions that fit your goals.' }, { title: 'A place to grow', description: 'Build knowledge and practical skills, one course at a time.' }] } },
-      { type: 'Courses', props: { id: 'courses', enabled: 'yes', title: 'Explore our courses', description: 'Discover what you can learn next.', delivery: 'all', limit: 6 } },
-      { type: 'FAQ', props: { id: 'faq', enabled: 'yes', title: 'A few things you might want to know', items: [{ question: 'How do I join?', answer: 'Create a student account and request to join our organization. Our team will review your request.' }, { question: 'Can I attend in person?', answer: 'Courses marked as offline include booking information, a location, and a schedule.' }] } },
-      { type: 'Contact', props: { id: 'contact', enabled: 'no', title: 'Let’s talk', description: 'Have a question? Our team is here to help.', email: '', phone: '', address: '' } },
-      { type: 'CTA', props: { id: 'cta', enabled: 'yes', title: 'Ready to take the next step?', description: 'Join our learning community and discover your next course.', buttonLabel: 'Create student account' } },
+      { type: 'Hero', props: { id: 'hero', enabled: 'yes', eyebrow: 'ACCREDITED DIPLOMAS & PROGRAMS · ENROLLING NOW', title: 'Empowering Learners to Master Practical Skills & Lead', description: 'Welcome to ' + org.name + '. Explore specialized academic tracks, industry-backed certifications, and hands-on faculty mentorship tailored for your future.', imageUrl: '/images/landing/editorial/org-brand.png', buttonLabel: 'Explore Admissions' } },
+      { type: 'About', props: { id: 'about', enabled: 'yes', title: 'Our Mission: Excellence in Practical Education', description: 'At ' + org.name + ', we are dedicated to delivering premier learning experiences. Our curriculum bridges foundational academic theory with real-world industry demands, empowering students and ambitious professionals to excel.', imageUrl: '/images/landing/editorial/org-team.png' } },
+      { type: 'Features', props: { id: 'features', enabled: 'yes', title: 'Why Study at ' + org.name, items: [
+        { title: 'Accredited Curriculum', description: 'Coursework and practical skill tracks meticulously designed to meet academic and market standards.' },
+        { title: 'Dedicated Faculty Mentors', description: 'Learn directly from certified educators and domain practitioners committed to your personal progress.' },
+        { title: 'Recognized Credentials', description: 'Earn verified credentials and portfolio projects that demonstrate mastery and unlock new opportunities.' }
+      ] } },
+      { type: 'Courses', props: { id: 'courses', enabled: 'yes', title: 'Academic Programs & Offerings', description: 'Discover our certified courses, interactive cohorts, and specialized workshops available this term.', delivery: 'all', limit: 6 } },
+      { type: 'FAQ', props: { id: 'faq', enabled: 'yes', title: 'Admissions & Program Information', items: [
+        { question: 'How do I apply for a course or diploma?', answer: 'Create a student account with our academy, select your desired program, and complete enrollment. Our admissions team will guide you through next steps.' },
+        { question: 'Are certificates verified upon graduation?', answer: 'Yes! Every graduate receives a verified digital certificate hosted and validated on the Nudra learning infrastructure.' },
+        { question: 'Do you offer in-person workshops and campus sessions?', answer: 'Yes! Programs marked as in-person include scheduled lecture times, workshop venues, and location details shared upon enrollment.' }
+      ] } },
+      { type: 'Contact', props: { id: 'contact', enabled: 'no', title: 'Contact Our Admissions Office', description: 'Have questions about course registration, corporate training, or schedules? Our advisors are here to help.', email: '', phone: '', address: '' } },
+      { type: 'CTA', props: { id: 'cta', enabled: 'yes', title: 'Start Your Educational Journey With ' + org.name, description: 'Take the decisive step toward achieving your goals. Join our community of motivated students and instructors today.', buttonLabel: 'Apply for Admission' } },
     ],
   };
 }

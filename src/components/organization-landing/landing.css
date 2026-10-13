@@ -21,6 +21,7 @@
   overflow-x: hidden;
   min-height: 100vh;
   position: relative;
+  container-type: inline-size;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -103,6 +104,34 @@
 .org-landing-brand-dot {
   color: #a6ba49;
   font-weight: 800;
+}
+
+.org-landing-brand-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.org-landing-brand-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.org-landing-platform-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #63815c;
+  margin-top: 1px;
+}
+
+.org-landing-platform-dot {
+  color: #a6ba49;
+  font-size: 9px;
 }
 
 .org-landing-nav-links {
@@ -326,11 +355,17 @@
 .org-landing-trust-pill {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   font-size: 12px;
-  font-weight: 700;
-  color: var(--landing-primary);
+  font-weight: 600;
+  color: var(--landing-text);
   width: fit-content;
+}
+
+.org-landing-trust-star {
+  color: #eab308;
+  font-size: 13px;
+  letter-spacing: 2px;
 }
 
 .org-landing-trust-dot {
@@ -1297,6 +1332,46 @@
   color: #e0f36b;
 }
 
+.org-landing-verified-seal {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 10px 14px;
+  border-radius: 14px;
+  margin-bottom: 12px;
+}
+
+.org-landing-seal-icon {
+  font-size: 20px;
+}
+
+.org-landing-verified-seal strong {
+  display: block;
+  font-size: 12px;
+  color: white;
+}
+
+.org-landing-verified-seal span {
+  display: block;
+  font-size: 10px;
+  color: #9eb3a3;
+  margin-top: 2px;
+}
+
+.org-landing-nudra-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #8da494;
+}
+
+.org-landing-nudra-link:hover {
+  color: #e0f36b;
+}
+
 .org-landing-footer-bottom {
   display: flex;
   align-items: center;
@@ -1403,3 +1478,65 @@
     gap: 12px;
   }
 }
+
+/* ──────────────────────────────────────────────────────────────────
+   Container Queries (for Puck Editor Canvas & Embedded Previews)
+   ────────────────────────────────────────────────────────────────── */
+@container (max-width: 900px) {
+  .org-landing-hero {
+    grid-template-columns: 1fr;
+    gap: 40px;
+    padding-block: 48px;
+  }
+  .org-landing-about,
+  .org-landing-faq,
+  .org-landing-contact,
+  .org-landing-cta-editorial,
+  .org-landing-showcase-card {
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+  .org-landing-steps-grid,
+  .org-landing-courses-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+  }
+}
+
+@container (max-width: 720px) {
+  .org-landing-nav-link {
+    display: none;
+  }
+  .org-landing-nav {
+    min-height: 68px;
+    gap: 12px;
+  }
+  .org-landing-brand {
+    font-size: 18px;
+    white-space: nowrap;
+  }
+  .org-landing-brand-logo,
+  .org-landing-brand-icon {
+    width: 34px;
+    height: 34px;
+  }
+  .org-landing-hero-title {
+    font-size: 36px;
+    letter-spacing: -1.6px;
+  }
+  .org-landing-hero-art-card {
+    height: 300px;
+  }
+  .org-landing-steps-grid,
+  .org-landing-courses-grid {
+    grid-template-columns: 1fr;
+  }
+  .org-landing-cta-editorial {
+    padding: 40px 20px;
+  }
+  .org-landing-footer-top-grid {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+}
+
