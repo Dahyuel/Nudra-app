@@ -79,11 +79,11 @@ export const ProfileMenu: React.FC<ProfileMenuProps> = ({ align = 'left', showNa
       {open && (
         <div
           id="profile-menu-dropdown"
-          className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} ${openUp ? 'bottom-full mb-2' : 'top-full mt-2'} w-60 bg-white dark:bg-gray-900 rounded-2xl shadow-xl border border-gray-100 dark:border-gray-800 p-2 z-50`}
+          className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} ${openUp ? 'bottom-full mb-2' : 'top-full mt-2'} w-60 bg-white dark:bg-[#132026] rounded-2xl shadow-xl border border-[#063e33]/10 dark:border-white/10 p-2 z-50`}
         >
-          <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-800 mb-1">
-            <p className="text-left text-xs font-bold text-gray-900 dark:text-gray-100">{user?.name}</p>
-            <p dir="ltr" className="text-left text-[11px] text-gray-500 dark:text-gray-400 truncate">{user?.email}</p>
+          <div className="px-3 py-2 border-b border-[#063e33]/8 dark:border-white/10 mb-1">
+            <p className="text-left text-xs font-bold text-gray-900 dark:text-white">{user?.name}</p>
+            <p dir="ltr" className="text-left text-[11px] text-gray-500 dark:text-slate-400 truncate">{user?.email}</p>
           </div>
 
           {user?.role === 'instructor' && (

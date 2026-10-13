@@ -8,8 +8,8 @@ export const DashboardLayout: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <div className="min-h-screen bg-[#F8FAF9] flex selection:bg-[#B7E4C7] selection:text-[#2D6A4F]">
-      {/* Left Clean Sidebar */}
+    <div className="min-h-screen bg-[#faf9f3] dark:bg-[#0b141a] flex selection:bg-[#e0f36b] selection:text-[#063e33] dark:selection:bg-[#e0f36b]/30 dark:selection:text-[#e0f36b] transition-colors duration-200">
+      {/* Left Editorial Sidebar */}
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       {/* Main Content Area */}

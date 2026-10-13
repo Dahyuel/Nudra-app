@@ -8,8 +8,8 @@
   }
 
   html {
-    background-color: #F8FAF9;
-    color: #1B1B1B;
+    background-color: #faf9f3;
+    color: #182b25;
   }
 
   html.dark {
@@ -18,8 +18,8 @@
   }
 
   body {
-    background-color: #F8FAF9;
-    color: #1B1B1B;
+    background-color: #faf9f3;
+    color: #182b25;
     overflow-x: hidden;
   }
 
@@ -50,7 +50,7 @@
   height: 6px;
 }
 ::-webkit-scrollbar-track {
-  background: #F8FAF9;
+  background: #f8f9fa;
 }
 ::-webkit-scrollbar-thumb {
   background: #D1D5DB;
